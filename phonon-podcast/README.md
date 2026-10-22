@@ -7,7 +7,7 @@ Podcast generation pipeline for the Phonon audio engine.
 - JSON script → multi-speaker podcast audio generation
 - Concurrent TTS synthesis with configurable concurrency
 - SRT subtitle generation from STT output
-- Automatic chapter markers (silence detection or speaker switches)
+- Chapter markers from script titles, silence detection or speaker switches
 - Per-segment language override for multi-language podcasts
 - LLM-powered script generation (`ScriptGenerator` trait)
 
@@ -33,8 +33,11 @@ pipeline.generate_to_file(&script, "output.wav").await?;
     "Bob": { "voice_id": "en-US-GuyNeural" }
   },
   "segments": [
-    { "speaker": "Alice", "text": "Welcome!" },
+    { "speaker": "Alice", "text": "Welcome!", "chapter": "Intro" },
     { "speaker": "Bob", "text": "Thanks for having me." }
   ]
 }
 ```
+
+`chapter` is optional: a segment with one opens a chapter of that title. Without any,
+chapters follow speaker changes. `ScriptGenerator` asks the LLM for 3–6 such chapters.

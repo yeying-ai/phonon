@@ -278,11 +278,13 @@ mod tests {
           speaker: "alice".into(),
           text: "Welcome".into(),
           language: None,
+          chapter: None,
         },
         Segment {
           speaker: "bob".into(),
           text: "Thanks".into(),
           language: None,
+          chapter: None,
         },
       ],
       config: Default::default(),

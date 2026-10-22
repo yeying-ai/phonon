@@ -170,6 +170,8 @@ struct LlmScriptResponse {
 struct LlmSegment {
   speaker: String,
   text: String,
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  chapter: Option<String>,
 }
 
 /// OpenAI-compatible LLM script generator.
@@ -254,12 +256,15 @@ impl OpenAiScriptGenerator {
 Rules:
 1. Output ONLY valid JSON (no markdown, no code fences, no explanation).
 2. The JSON must have this exact structure:
-   {{"title": "...", "segments": [{{"speaker": "...", "text": "..."}}]}}
+   {{"title": "...", "segments": [{{"speaker": "...", "text": "...", "chapter": "..."}}]}}
 3. Use ONLY the speaker names listed below.
 4. Generate approximately {} dialogue segments.
 5. The conversation should feel natural, with back-and-forth exchanges.
 6. Use the language: {}.
 7. Each segment should be 1-3 sentences (natural speech length for TTS).
+8. Divide the episode into 3-6 chapters by sub-topic. Give "chapter" (a short title, in
+   the script's language) only on the segment that opens a chapter, starting with the
+   first segment; omit it everywhere else.
 
 Speakers:
 {}
@@ -365,6 +370,7 @@ impl ScriptGenerator for OpenAiScriptGenerator {
         speaker: s.speaker,
         text: s.text,
         language: None,
+        chapter: s.chapter.filter(|c| !c.trim().is_empty()),
       })
       .collect();
 
@@ -562,14 +568,17 @@ mod tests {
         LlmSegment {
           speaker: "host".to_string(),
           text: "Welcome!".to_string(),
+          chapter: None,
         },
         LlmSegment {
           speaker: "guest".to_string(),
           text: "Thanks!".to_string(),
+          chapter: None,
         },
         LlmSegment {
           speaker: "unknown".to_string(),
           text: "This should be filtered".to_string(),
+          chapter: None,
         },
       ],
     };
@@ -588,6 +597,7 @@ mod tests {
         speaker: s.speaker,
         text: s.text,
         language: None,
+        chapter: None,
       })
       .collect();
 

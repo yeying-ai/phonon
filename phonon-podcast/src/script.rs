@@ -36,6 +36,11 @@ pub struct Segment {
   /// for this segment, enabling multi-language podcasts.
   #[serde(default, skip_serializing_if = "Option::is_none")]
   pub language: Option<String>,
+
+  /// Title of the chapter this segment opens. When any segment has one,
+  /// chapters follow these titles instead of speaker changes.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub chapter: Option<String>,
 }
 
 impl PodcastScript {

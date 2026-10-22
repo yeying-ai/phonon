@@ -21,6 +21,11 @@ Items K1–K6 in [Todos.md](./Todos.md).
 - Segment spans (subtitles, chapters) skip the silence TTS pads each segment with
   (~0.3 s for MiniMax), which put every subtitle early. Against Qwen STT timestamps
   the median cue boundary error is 0.14 s.
+- Episode chapters were one per speaker change, so a dialogue got one chapter per
+  segment titled "host" / "guest". `Segment` has an optional `chapter` title;
+  when any segment has one, chapters follow the titles. The script generator asks
+  the LLM for 3–6 of them. **BREAKING** (library): `Segment` struct literals need
+  `chapter: None`.
 
 ## v0.8.0 - 2026-10-20 — configurable model providers
 

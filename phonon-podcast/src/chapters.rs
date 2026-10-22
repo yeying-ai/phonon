@@ -22,8 +22,8 @@
 //!         ("Bob".into(), VoiceConfig::new("echo")),
 //!     ]),
 //!     segments: vec![
-//!         Segment { speaker: "Alice".into(), text: "Welcome!".into(), language: None },
-//!         Segment { speaker: "Bob".into(), text: "Thanks!".into(), language: None },
+//!         Segment { speaker: "Alice".into(), text: "Welcome!".into(), language: None, chapter: None },
+//!         Segment { speaker: "Bob".into(), text: "Thanks!".into(), language: None, chapter: None },
 //!     ],
 //!     config: Default::default(),
 //! };
@@ -211,25 +211,42 @@ pub fn chapters_from_speakers(script: &PodcastScript) -> Vec<Chapter> {
   chapters
 }
 
-/// Assign actual timestamps to speaker-based chapters given per-segment
-/// `(start, end)` times in seconds.
+/// Assign chapters timestamps given per-segment `(start, end)` times in seconds.
+///
+/// When any segment carries a [`Segment::chapter`](crate::Segment::chapter)
+/// title, a chapter opens at each such segment (segments before the first
+/// title belong to the first chapter). Otherwise a chapter opens at every
+/// speaker change, titled with the speaker.
 ///
 /// `segment_spans` should have one entry per segment in the script; segments
-/// without a span are ignored. A chapter starts at its speaker's first
-/// segment and ends where the next speaker starts (so the pause before a
-/// speaker change belongs to the earlier chapter), or at the last segment's end.
+/// without a span are ignored. A chapter ends where the next one starts (so
+/// the pause before it belongs to the earlier chapter), or at the last
+/// segment's end.
 pub fn assign_chapter_times(script: &PodcastScript, segment_spans: &[(f64, f64)]) -> Vec<Chapter> {
+  let titled = script.segments.iter().any(|s| s.chapter.is_some());
   let mut chapters: Vec<Chapter> = Vec::new();
   let mut current_speaker: Option<&str> = None;
 
   for (seg, &(start, _)) in script.segments.iter().zip(segment_spans) {
-    if current_speaker != Some(seg.speaker.as_str()) {
-      if let Some(last) = chapters.last_mut() {
-        last.end = Some(start);
-      }
-      chapters.push(Chapter::new(&seg.speaker, start));
+    let title = if titled {
+      seg.chapter.as_deref()
+    } else if current_speaker != Some(seg.speaker.as_str()) {
       current_speaker = Some(&seg.speaker);
+      Some(seg.speaker.as_str())
+    } else {
+      None
+    };
+    let Some(title) = title else { continue };
+    match chapters.last_mut() {
+      Some(last) => last.end = Some(start),
+      None => {
+        // Untitled leading segments join the first chapter.
+        let first_start = segment_spans.first().map_or(start, |&(s, _)| s);
+        chapters.push(Chapter::new(title, first_start));
+        continue;
+      }
     }
+    chapters.push(Chapter::new(title, start));
   }
 
   if let (Some(last), Some(&(_, end))) = (chapters.last_mut(), segment_spans.last()) {
@@ -280,6 +297,7 @@ mod tests {
           speaker: speaker.to_string(),
           text: text.to_string(),
           language: None,
+          chapter: None,
         })
         .collect(),
       config: Default::default(),
@@ -491,6 +509,28 @@ mod tests {
   }
 
   // --- Format tests ---
+
+  #[test]
+  fn test_assign_chapter_times_follows_titles_over_speakers() {
+    let mut script = make_script(vec![
+      ("Alice", "Hi"),
+      ("Bob", "Hello"),
+      ("Alice", "So, sleep"),
+      ("Bob", "Right"),
+    ]);
+    script.segments[1].chapter = Some("Intro".into());
+    script.segments[2].chapter = Some("Sleep".into());
+    let spans = [(0.0, 1.0), (1.5, 2.5), (3.0, 4.0), (4.5, 5.5)];
+    let chapters = assign_chapter_times(&script, &spans);
+
+    let titles: Vec<&str> = chapters.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(titles, ["Intro", "Sleep"]);
+    // The untitled first segment joins the first chapter.
+    assert!((chapters[0].start - 0.0).abs() < 1e-9);
+    assert!((chapters[0].end.unwrap_or(0.0) - 3.0).abs() < 1e-9);
+    assert!((chapters[1].start - 3.0).abs() < 1e-9);
+    assert!((chapters[1].end.unwrap_or(0.0) - 5.5).abs() < 1e-9);
+  }
 
   #[test]
   fn test_format_chapters_text() {
