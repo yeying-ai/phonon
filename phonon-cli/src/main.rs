@@ -550,7 +550,8 @@ async fn main() -> anyhow::Result<()> {
         opts = opts.with_language(lang);
       }
 
-      println!("Transcribing {:?}...", input);
+      // stdout carries only the transcript, so it can be piped.
+      eprintln!("Transcribing {:?}...", input);
       let input_str = input.to_string_lossy();
       let result = stt.transcribe_file(&input_str, Some(opts)).await?;
 
