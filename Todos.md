@@ -213,3 +213,26 @@
   - 做法：每段按 LUFS 归一到同一目标，过短片段退回峰值;整期 LUFS 归一
   - 验收：同一实验各音色差 ≤1 dB
   - DONE: 统一到共同 LUFS(受最尖峰段 -1 dBTP 约束);Edge 4 音色实测差 0.00 dB
+
+## v0.8.1 — 真实出一期播客暴露的问题
+
+> 2026-10-22 用 v0.8.0 出一期 18 段、979 字的中文双人播客:MiniMax LLM 写脚本(35 s),MiniMax TTS 合成并导出
+> (36 s,211 s 音频)。内容完整：用 Qwen STT 回听，与脚本只差 3 处数字或同音字写法。以下问题按发现顺序排列。
+
+- [ ] **K1** `stt --json` 把 "Transcribing…" 打到 stdout,输出无法直接当 JSON 用
+  - 验收:`phonon stt --json … | python3 -m json.tool` 成功
+- [ ] **K2** 整期响度没达标：目标 -16 LUFS,实际 -18.5 LUFS,CLI 没有提示。原因是 `normalize_lufs` 用真峰值上限压低增益，没有限幅器;语音峰值比响度高约 17 dB,而 -16 LUFS / -1 dBTP 只留 15 dB
+  - 做法:phonon-core 增加真峰值前瞻限幅，响度归一先加增益再限幅;CLI 打印实际达到的 LUFS / 真峰值
+  - 验收：同一期重导出后积分响度在 -16 ±0.5 LUFS 内，真峰值 ≤ -1 dBTP;旧实现跑同一测试为红
+- [ ] **K3** 字幕一段一条：平均 54 字、11.3 s,最长 79 字、15 s,无法当字幕显示(常规为每条 ≤2 行、几秒)
+  - 做法：按句读标点把段切成短条，按字数比例分配该段时长
+  - 验收：每条 ≤24 字;拿本期 Qwen STT 句级时间戳对照，切分点误差中位数 ≤0.3 s
+- [ ] **K4** 章节一段一个，标题是 "host" / "guest"(对话里每段都换人)
+  - 做法:`Segment` 加可选 `chapter` 标题，脚本生成提示词让 LLM 标 3–6 个话题章节;有标注时按标注出章节，没有时保持原行为
+  - 验收：重新生成本期，章节 3–6 个，标题是话题
+- [ ] **K5** 换 provider 必须手改脚本 JSON 里的音色，而且没地方查某家有哪些音色(Qwen / GLM 报 "音色不存在")
+  - 做法：预置带一组联网验证过的音色(第一个即默认),`phonon providers` 列出;`episode-export` / `podcast generate` 支持 `--voice 说话人=音色` 覆盖
+  - 验收：同一份脚本用 `--voice` 在 Qwen、GLM 上导出成功
+- [ ] **K6** CLI 没有"选题 → 脚本"入口(只有库 API),`ScriptRequest` 默认音色是 OpenAI 的 alloy / echo
+  - 做法:`phonon podcast script --topic … -o script.json`,用配置的 LLM;主持人和嘉宾音色取 TTS provider 音色表的前两个
+  - 验收：用这条命令加 `episode-export` 从选题出一期，字幕、章节、响度都符合 K2–K4
