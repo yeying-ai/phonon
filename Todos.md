@@ -222,9 +222,10 @@
 - [x] **K1** `stt --json` 把 "Transcribing…" 打到 stdout,输出无法直接当 JSON 用
   - 验收:`phonon stt --json … | python3 -m json.tool` 成功
   - DONE: 进度提示改走 stderr;GLM 识别 two.wav 的 `--json` 输出经 `json.tool` 解析通过(8fd4bef)
-- [ ] **K2** 整期响度没达标：目标 -16 LUFS,实际 -18.5 LUFS,CLI 没有提示。原因是 `normalize_lufs` 用真峰值上限压低增益，没有限幅器;语音峰值比响度高约 17 dB,而 -16 LUFS / -1 dBTP 只留 15 dB
+- [x] **K2** 整期响度没达标：目标 -16 LUFS,实际 -18.5 LUFS,CLI 没有提示。原因是 `normalize_lufs` 用真峰值上限压低增益，没有限幅器;语音峰值比响度高约 17 dB,而 -16 LUFS / -1 dBTP 只留 15 dB
   - 做法:phonon-core 增加真峰值前瞻限幅，响度归一先加增益再限幅;CLI 打印实际达到的 LUFS / 真峰值
   - 验收：同一期重导出后积分响度在 -16 ±0.5 LUFS 内，真峰值 ≤ -1 dBTP;旧实现跑同一测试为红
+  - DONE: 新增 `limit_true_peak`(4× 过采样峰值，前瞻 5 ms,释放 80 ms),`normalize_lufs` 先加足增益再限幅、最多 4 轮补偿;同一期重导出 PCM 为 -16.00 LUFS / -1.00 dBTP,编码成 MP3 后为 -16.27 / -1.24;旧实现跑新测试为红，把起点处理改回按 1.0 计算会让 3 个测试变红(559687b)
 - [ ] **K3** 字幕一段一条：平均 54 字、11.3 s,最长 79 字、15 s,无法当字幕显示(常规为每条 ≤2 行、几秒)
   - 做法：按句读标点把段切成短条，按字数比例分配该段时长
   - 验收：每条 ≤24 字;拿本期 Qwen STT 句级时间戳对照，切分点误差中位数 ≤0.3 s
