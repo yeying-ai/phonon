@@ -238,6 +238,7 @@
   - 做法：预置带一组联网验证过的音色(第一个即默认),`phonon providers` 列出;`episode-export` / `podcast generate` 支持 `--voice 说话人=音色` 覆盖
   - 验收：同一份脚本用 `--voice` 在 Qwen、GLM 上导出成功
   - DONE: 预置改为音色表(首个为默认),MiniMax 6 / Qwen 7 / GLM 7 / StepFun 6 / Edge 4 个音色逐个联网通过，虚构音色五家都返回错误;`--voice 说话人=音色` 可重复;同一份脚本经 Qwen(Ethan/Cherry)、GLM(xiaochen/tongtong)导出成功(c5ccb26)
-- [ ] **K6** CLI 没有"选题 → 脚本"入口(只有库 API),`ScriptRequest` 默认音色是 OpenAI 的 alloy / echo
+- [x] **K6** CLI 没有"选题 → 脚本"入口(只有库 API),`ScriptRequest` 默认音色是 OpenAI 的 alloy / echo
   - 做法:`phonon podcast script --topic … -o script.json`,用配置的 LLM;主持人和嘉宾音色取 TTS provider 音色表的前两个
   - 验收：用这条命令加 `episode-export` 从选题出一期，字幕、章节、响度都符合 K2–K4
+  - DONE: `podcast script` + `--llm`;实跑暴露并修复两点:LLM 返回格式改为章节包段(原格式 7 次中 4 次 JSON 无效),max_tokens 4096→16384 + StepFun `reasoning_effort: low` + 截断时明确报错;五家共 12 次全部解析成功，各 3–5 章。端到端(MiniMax 写脚本 + Qwen TTS):195 s,4 章,-16.27 LUFS / -1.23 dBTP(MP3),字幕 57 条 ≤24 字、切分误差中位数 0.177 s;与 STT 的差异全是数字写法(五公里 vs 5)(41e8018)
