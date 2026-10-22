@@ -219,8 +219,9 @@
 > 2026-10-22 用 v0.8.0 出一期 18 段、979 字的中文双人播客:MiniMax LLM 写脚本(35 s),MiniMax TTS 合成并导出
 > (36 s,211 s 音频)。内容完整：用 Qwen STT 回听，与脚本只差 3 处数字或同音字写法。以下问题按发现顺序排列。
 
-- [ ] **K1** `stt --json` 把 "Transcribing…" 打到 stdout,输出无法直接当 JSON 用
+- [x] **K1** `stt --json` 把 "Transcribing…" 打到 stdout,输出无法直接当 JSON 用
   - 验收:`phonon stt --json … | python3 -m json.tool` 成功
+  - DONE: 进度提示改走 stderr;GLM 识别 two.wav 的 `--json` 输出经 `json.tool` 解析通过(8fd4bef)
 - [ ] **K2** 整期响度没达标：目标 -16 LUFS,实际 -18.5 LUFS,CLI 没有提示。原因是 `normalize_lufs` 用真峰值上限压低增益，没有限幅器;语音峰值比响度高约 17 dB,而 -16 LUFS / -1 dBTP 只留 15 dB
   - 做法:phonon-core 增加真峰值前瞻限幅，响度归一先加增益再限幅;CLI 打印实际达到的 LUFS / 真峰值
   - 验收：同一期重导出后积分响度在 -16 ±0.5 LUFS 内，真峰值 ≤ -1 dBTP;旧实现跑同一测试为红
