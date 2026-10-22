@@ -206,19 +206,47 @@ pub fn build_episode_metadata(
   (chapters, srt)
 }
 
-/// Convert a script + segment spans into per-segment SRT entries.
+/// Longest subtitle cue, in characters, for text with CJK characters
+/// (about two lines on screen).
+const MAX_CUE_CHARS_CJK: usize = 24;
+/// Longest subtitle cue for other text (two lines of ~42 characters).
+const MAX_CUE_CHARS: usize = 84;
+
+/// Convert a script + segment spans into SRT entries. Each segment is split
+/// into cues short enough to read, at sentence then clause boundaries; a
+/// cue's share of the segment's time follows its share of the letters.
 /// Segments without a span are skipped.
 fn entries_from_script(script: &PodcastScript, segment_spans: &[(f64, f64)]) -> Vec<SubtitleEntry> {
-  script
-    .segments
-    .iter()
-    .zip(segment_spans)
-    .map(|(seg, &(start, end))| SubtitleEntry {
-      start,
-      end,
-      text: seg.text.clone(),
-    })
-    .collect()
+  let mut entries = Vec::new();
+  for (seg, &(start, end)) in script.segments.iter().zip(segment_spans) {
+    let max_chars = if seg.text.chars().any(is_cjk) {
+      MAX_CUE_CHARS_CJK
+    } else {
+      MAX_CUE_CHARS
+    };
+    let cues = phonon_ai::tts::split_text(&seg.text, max_chars);
+    let weights: Vec<usize> = cues.iter().map(|c| letter_count(c).max(1)).collect();
+    let total = weights.iter().sum::<usize>().max(1) as f64;
+    let mut done = 0;
+    for (cue, weight) in cues.iter().zip(&weights) {
+      let cue_start = start + (end - start) * done as f64 / total;
+      done += weight;
+      entries.push(SubtitleEntry {
+        start: cue_start,
+        end: start + (end - start) * done as f64 / total,
+        text: cue.trim().to_string(),
+      });
+    }
+  }
+  entries
+}
+
+fn is_cjk(c: char) -> bool {
+  matches!(c, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}')
+}
+
+fn letter_count(text: &str) -> usize {
+  text.chars().filter(|c| c.is_alphanumeric()).count()
 }
 
 #[cfg(test)]
@@ -281,6 +309,35 @@ mod tests {
     assert!(srt.contains("Welcome"));
     assert!(srt.contains("Thanks"));
     assert!(srt.contains("00:00:00,000"));
+  }
+
+  #[test]
+  fn test_long_segment_becomes_short_cues_in_time_order() {
+    let mut script = make_script();
+    script.segments[0].text = "夜间模式能减少部分刺眼感，但不能屏蔽内容带来的兴奋和焦虑。\
+      真正让人清醒的，往往不是蓝光本身，而是快速变化的信息、情绪波动以及下一条还有什么的期待。"
+      .into();
+    let entries = entries_from_script(&script, &[(10.0, 22.0), (22.5, 25.0)]);
+    let first: Vec<_> = entries
+      .iter()
+      .take_while(|e| e.end <= 22.0 + 1e-9)
+      .collect();
+    assert!(first.len() >= 3, "got {} cues", first.len());
+    assert!(
+      first
+        .iter()
+        .all(|e| e.text.chars().count() <= MAX_CUE_CHARS_CJK)
+    );
+    assert!((first[0].start - 10.0).abs() < 1e-9);
+    assert!((first[first.len() - 1].end - 22.0).abs() < 1e-9);
+    for pair in first.windows(2) {
+      assert!(
+        (pair[0].end - pair[1].start).abs() < 1e-9,
+        "cues must be contiguous"
+      );
+    }
+    let joined: String = first.iter().map(|e| e.text.as_str()).collect();
+    assert_eq!(joined, script.segments[0].text);
   }
 
   #[test]

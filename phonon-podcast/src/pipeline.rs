@@ -272,10 +272,21 @@ fn render(
   let target_channels = config.output_channels;
 
   let segments = post_process_segments(segments, target_rate, target_channels)?;
+  let silences: Vec<(f64, f64)> = segments.iter().map(edge_silence_secs).collect();
 
   // Segment spans are measured during assembly (so pauses and crossfade
-  // overlaps are exact), then shifted by the intro that precedes them.
+  // overlaps are exact), narrowed to the speech inside each segment (TTS
+  // pads ~0.3 s, which would show subtitles early), then shifted by the
+  // intro that precedes them.
   let (mut assembled, spans) = assemble_segments(segments, config)?;
+  let spans: Vec<(f64, f64)> = spans
+    .into_iter()
+    .zip(silences)
+    .map(|((start, end), (lead, tail))| {
+      let speech_start = (start + lead).min(end);
+      (speech_start, (end - tail).max(speech_start))
+    })
+    .collect();
 
   let mut intro_secs = 0.0;
   if let Some(intro) = assets.intro {
@@ -315,6 +326,22 @@ const SEGMENT_TRUE_PEAK_DBTP: f32 = -1.0;
 
 /// Post-process segments: resample, channel-convert to target format and
 /// level them to one loudness (see [`level_segments`]).
+/// Seconds of near-silence (40 dB under the segment's peak) at the start
+/// and end of a segment. All-silent segments report none.
+fn edge_silence_secs(segment: &AudioBuffer) -> (f64, f64) {
+  let channels = segment.channels.max(1) as usize;
+  let threshold = phonon_core::peak(segment) * 0.01;
+  if threshold <= 0.0 {
+    return (0.0, 0.0);
+  }
+  let loud = |frame: &[f32]| frame.iter().any(|s| s.abs() > threshold);
+  let frames: Vec<&[f32]> = segment.samples.chunks(channels).collect();
+  let lead = frames.iter().position(|f| loud(f)).unwrap_or(0);
+  let tail = frames.iter().rev().position(|f| loud(f)).unwrap_or(0);
+  let rate = segment.sample_rate.max(1) as f64;
+  (lead as f64 / rate, tail as f64 / rate)
+}
+
 fn post_process_segments(
   buffers: Vec<AudioBuffer>,
   target_rate: u32,
@@ -971,6 +998,44 @@ mod tests {
     let err = pipeline.generate(&script).await.expect_err("should error");
     let s = err.to_string();
     assert!(s.contains("Failed to load"), "unexpected error: {}", s);
+  }
+
+  #[test]
+  fn test_spans_skip_the_silence_tts_pads_segments_with() {
+    let config = PipelineConfig::default();
+    let rate = config.output_sample_rate;
+    let ch = config.output_channels as usize;
+    // 0.3 s silence, 1 s tone, 0.2 s silence.
+    let padded = |rate: u32| {
+      let frames = |secs: f64| (secs * rate as f64) as usize;
+      let mut samples = vec![0.0; frames(0.3) * ch];
+      samples.extend((0..frames(1.0) * ch).map(|i| ((i / ch) as f32 * 0.05).sin() * 0.5));
+      samples.extend(vec![0.0; frames(0.2) * ch]);
+      AudioBuffer {
+        samples,
+        sample_rate: rate,
+        channels: ch as u16,
+      }
+    };
+    let assets = Assets {
+      intro: None,
+      outro: None,
+      bgm: None,
+    };
+    let (_, spans) = render(vec![padded(rate), padded(rate)], assets, &config).unwrap();
+    let second_start = 1.5 + config.pause_between_segments_secs - config.crossfade_secs;
+    for ((start, end), want) in spans.iter().zip([0.0, second_start]) {
+      assert!(
+        (start - (want + 0.3)).abs() < 0.01,
+        "start {start}, want {}",
+        want + 0.3
+      );
+      assert!(
+        (end - (want + 1.3)).abs() < 0.01,
+        "end {end}, want {}",
+        want + 1.3
+      );
+    }
   }
 
   #[tokio::test]

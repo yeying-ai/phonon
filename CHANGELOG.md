@@ -15,6 +15,12 @@ Items K1–K6 in [Todos.md](./Todos.md).
   episode exported at -18.5 LUFS against a -16 target; it now lands at -16.0.
   `episode-export` prints the loudness it reached.
 - `phonon stt` prints its progress line to stderr, so `--json` output can be piped.
+- Episode subtitles were one cue per script segment (54 characters and 11 s on
+  average). Segments are now split at sentence and clause boundaries into cues of
+  at most 24 CJK / 84 other characters, timed by their share of the letters.
+- Segment spans (subtitles, chapters) skip the silence TTS pads each segment with
+  (~0.3 s for MiniMax), which put every subtitle early. Against Qwen STT timestamps
+  the median cue boundary error is 0.14 s.
 
 ## v0.8.0 - 2026-10-20 — configurable model providers
 
