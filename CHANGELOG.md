@@ -3,6 +3,19 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## v0.8.1 (unreleased) — fixes from a real episode run
+
+Items K1–K6 in [Todos.md](./Todos.md).
+
+### Fixed
+
+- `normalize_lufs` now reaches its loudness target: it applies the full gain and
+  brings peaks under the ceiling with a new look-ahead true-peak limiter
+  (`limit_true_peak`), instead of lowering the gain until the peak fits. A real
+  episode exported at -18.5 LUFS against a -16 target; it now lands at -16.0.
+  `episode-export` prints the loudness it reached.
+- `phonon stt` prints its progress line to stderr, so `--json` output can be piped.
+
 ## v0.8.0 - 2026-10-20 — configurable model providers
 
 Items J1–J10 in [Todos.md](./Todos.md); usage and design record in

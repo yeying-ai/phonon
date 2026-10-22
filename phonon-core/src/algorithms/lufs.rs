@@ -414,52 +414,51 @@ fn tp_kernels() -> [[f64; TP_TAPS_PER_PHASE]; TP_PHASES] {
   out
 }
 
-/// Compute true peak (linear, in [0.0, ∞)) via 4× polyphase oversampling.
+/// Per-frame true-peak magnitude (linear), the maximum over channels of
+/// the sample and its 4× oversampled neighbours that follow it.
 ///
 /// The polyphase filter is applied only to interior samples that have full
 /// kernel coverage; edge samples use raw sample magnitude. This avoids Gibbs
 /// ringing artifacts from implicit zero-padding that would otherwise
 /// over-report the true peak of signals with abrupt boundaries.
-pub fn true_peak(buffer: &AudioBuffer) -> f32 {
+fn frame_true_peaks(buffer: &AudioBuffer) -> Vec<f64> {
   if buffer.samples.is_empty() || buffer.channels == 0 {
-    return 0.0;
+    return Vec::new();
   }
   let channels = buffer.channels as usize;
   let kernels = tp_kernels();
   let per_channel = deinterleave(&buffer.samples, channels);
   let half = TP_TAPS_PER_PHASE / 2;
-  let mut peak = 0.0_f64;
+  let frames = per_channel.first().map_or(0, Vec::len);
+  let mut peaks = vec![0.0_f64; frames];
 
   for ch in &per_channel {
-    let n = ch.len();
-    // Edge samples (lacking full kernel coverage): use raw sample peak.
+    let n = ch.len().min(frames);
+    for (p, &s) in peaks.iter_mut().zip(ch) {
+      *p = p.max((s as f64).abs());
+    }
     if n <= 2 * half {
-      for &s in ch {
-        peak = peak.max((s as f64).abs());
-      }
       continue;
-    }
-    for &s in &ch[..half] {
-      peak = peak.max((s as f64).abs());
-    }
-    for &s in &ch[n - half..] {
-      peak = peak.max((s as f64).abs());
     }
     // Interior samples: full polyphase filter at every sub-sample position.
     for i in half..n - half {
-      let s = ch[i] as f64;
-      peak = peak.max(s.abs());
+      let mut peak = peaks[i];
       for taps in &kernels[1..] {
         let mut acc = 0.0_f64;
         for (tap, &coeff) in taps.iter().enumerate() {
-          let src = i + half - tap;
-          acc += coeff * ch[src] as f64;
+          acc += coeff * ch[i + half - tap] as f64;
         }
         peak = peak.max(acc.abs());
       }
+      peaks[i] = peak;
     }
   }
-  peak as f32
+  peaks
+}
+
+/// Compute true peak (linear, in [0.0, ∞)) via 4× polyphase oversampling.
+pub fn true_peak(buffer: &AudioBuffer) -> f32 {
+  frame_true_peaks(buffer).into_iter().fold(0.0_f64, f64::max) as f32
 }
 
 /// True peak in dBTP (decibels true peak). Returns `f32::NEG_INFINITY` when silent.
@@ -502,31 +501,103 @@ pub fn measure_loudness(buffer: &AudioBuffer) -> LoudnessReport {
 
 // ─── Normalization ─────────────────────────────────────────────────────────
 
-/// Normalize a buffer to a target integrated loudness with optional true-peak limiting.
+/// Normalize a buffer to a target integrated loudness under a true-peak ceiling.
 ///
-/// Computes the LUFS-I gain needed to hit `target_lufs`. If applying that gain would
-/// exceed `true_peak_max_dbtp`, the gain is reduced so the true peak just touches
-/// the ceiling.
+/// Applies the gain that reaches `target_lufs`, then limits peaks above
+/// `true_peak_max_dbtp` (see [`limit_true_peak`]). Limiting removes a little
+/// loudness, so the gain is corrected and the limiter re-run a few times.
+/// Speech has peaks ~17 dB above its loudness, more than the 15 dB between
+/// the usual -16 LUFS / -1 dBTP podcast targets, so lowering the gain alone
+/// would miss the loudness target.
 ///
 /// No-op when the buffer is too short to measure or already silent.
 pub fn normalize_lufs(buffer: &mut AudioBuffer, target_lufs: f32, true_peak_max_dbtp: f32) {
-  let current = loudness_integrated(buffer);
-  if !current.is_finite() {
+  /// Correction passes; each recovers most of what the previous limit took.
+  const PASSES: usize = 4;
+  for _ in 0..PASSES {
+    let current = loudness_integrated(buffer);
+    if !current.is_finite() {
+      return;
+    }
+    let gain_db = target_lufs - current;
+    if gain_db.abs() < 0.05 {
+      break;
+    }
+    let gain_lin = 10.0_f32.powf(gain_db / 20.0);
+    for s in &mut buffer.samples {
+      *s *= gain_lin;
+    }
+    limit_true_peak(buffer, true_peak_max_dbtp);
+  }
+  // Already-on-target input skips the loop but may still be over the ceiling.
+  limit_true_peak(buffer, true_peak_max_dbtp);
+}
+
+/// Look-ahead long enough for the gain to ramp down before a peak arrives.
+const LIMITER_LOOKAHEAD_SECS: f64 = 0.005;
+/// Release time constant: how fast gain recovers after a peak.
+const LIMITER_RELEASE_SECS: f64 = 0.08;
+
+/// Bring the true peak down to `ceiling_dbtp` with a look-ahead limiter,
+/// leaving frames that are already under the ceiling untouched.
+///
+/// Each frame needs gain `ceiling / peak`. A forward-looking minimum over the
+/// look-ahead window followed by a moving average of the same length gives a
+/// smooth gain that never exceeds what any frame needs; release then lets it
+/// recover gradually. Channels share one gain so the stereo image holds.
+pub fn limit_true_peak(buffer: &mut AudioBuffer, ceiling_dbtp: f32) {
+  let ceiling = 10.0_f64.powf(ceiling_dbtp as f64 / 20.0);
+  let needed: Vec<f64> = frame_true_peaks(buffer)
+    .into_iter()
+    .map(|p| if p > ceiling { ceiling / p } else { 1.0 })
+    .collect();
+  if needed.iter().all(|&g| g >= 1.0) {
     return;
   }
-  let mut gain_db = target_lufs - current;
-  // Apply true-peak ceiling.
-  let current_tp = true_peak_dbtp(buffer);
-  if current_tp.is_finite() {
-    let projected_tp = current_tp + gain_db;
-    if projected_tp > true_peak_max_dbtp {
-      gain_db -= projected_tp - true_peak_max_dbtp;
+  let window = ((buffer.sample_rate as f64 * LIMITER_LOOKAHEAD_SECS) as usize).max(1);
+  let ahead_min = sliding_min_ahead(&needed, window);
+
+  let release = (-1.0 / (buffer.sample_rate as f64 * LIMITER_RELEASE_SECS)).exp();
+  let channels = buffer.channels as usize;
+  // Frames before the start take `ahead_min[0]`, whose window covers every
+  // frame the average can reach from there.
+  let first = ahead_min.first().copied().unwrap_or(1.0);
+  let mut sum = first * window as f64;
+  let mut gain = 1.0_f64;
+  for (i, frame) in buffer.samples.chunks_mut(channels).enumerate() {
+    // Moving average of `ahead_min` over the frames `i - window + 1 ..= i`;
+    // each of those minimums covers frame `i`, so the average is ≤ needed[i].
+    sum += ahead_min.get(i).copied().unwrap_or(1.0);
+    sum -= if i >= window {
+      ahead_min[i - window]
+    } else {
+      first
+    };
+    gain = (sum / window as f64).min(gain * release + (1.0 - release));
+    for s in frame {
+      *s = (*s as f64 * gain) as f32;
     }
   }
-  let gain_lin = 10.0_f32.powf(gain_db / 20.0);
-  for s in &mut buffer.samples {
-    *s = (*s * gain_lin).clamp(-1.0, 1.0);
+}
+
+/// `out[i] = min(values[i ..= i + window - 1])`, clipped at the end.
+fn sliding_min_ahead(values: &[f64], window: usize) -> Vec<f64> {
+  let mut out = vec![0.0; values.len()];
+  let mut candidates = std::collections::VecDeque::new();
+  for i in (0..values.len()).rev() {
+    while candidates
+      .back()
+      .is_some_and(|&j: &usize| values[j] >= values[i])
+    {
+      candidates.pop_back();
+    }
+    candidates.push_back(i);
+    while candidates.front().is_some_and(|&j| j >= i + window) {
+      candidates.pop_front();
+    }
+    out[i] = candidates.front().map_or(1.0, |&j| values[j]);
   }
+  out
 }
 
 /// Immutable variant of [`normalize_lufs`].
@@ -760,6 +831,59 @@ mod tests {
       "true peak {} dBTP exceeds ceiling",
       tp_after
     );
+  }
+
+  /// Quiet tone with a short loud click every half second: the clicks set
+  /// the peak, the tone sets the loudness (crest factor ≈ 30 dB, speech is ~17).
+  fn spiky_buffer(sr: u32) -> AudioBuffer {
+    let mut buf = sine_buffer(300.0, 6.0, 0.03, sr);
+    let click = (sr as usize) / 1000;
+    for start in (0..buf.samples.len()).step_by(sr as usize / 2) {
+      for (k, s) in buf.samples.iter_mut().skip(start).take(click).enumerate() {
+        *s = if k % 2 == 0 { 0.9 } else { -0.9 };
+      }
+    }
+    buf
+  }
+
+  #[test]
+  fn test_normalize_lufs_reaches_target_when_peaks_are_high() {
+    let mut buf = spiky_buffer(48000);
+    normalize_lufs(&mut buf, -16.0, -1.0);
+    let after = loudness_integrated(&buf);
+    let tp = true_peak_dbtp(&buf);
+    assert!(
+      (after + 16.0).abs() <= 0.5,
+      "integrated {after} LUFS, want -16 ±0.5"
+    );
+    assert!(tp <= -1.0 + 0.05, "true peak {tp} dBTP over the -1 ceiling");
+  }
+
+  #[test]
+  fn test_limit_true_peak_catches_a_peak_at_the_start() {
+    let mut buf = sine_buffer(300.0, 1.0, 0.1, 48000);
+    buf.samples[0] = 0.99;
+    buf.samples[1] = -0.99;
+    limit_true_peak(&mut buf, -6.0);
+    let tp = true_peak_dbtp(&buf);
+    assert!(tp <= -6.0 + 0.05, "true peak {tp} dBTP over the -6 ceiling");
+  }
+
+  #[test]
+  fn test_normalize_lufs_limits_audio_already_at_target() {
+    let mut buf = spiky_buffer(48000);
+    let current = loudness_integrated(&buf);
+    normalize_lufs(&mut buf, current, -6.0);
+    let tp = true_peak_dbtp(&buf);
+    assert!(tp <= -6.0 + 0.05, "true peak {tp} dBTP over the -6 ceiling");
+  }
+
+  #[test]
+  fn test_limit_true_peak_leaves_quiet_audio_untouched() {
+    let mut buf = sine_buffer(1000.0, 1.0, 0.5, 48000);
+    let original = buf.samples.clone();
+    limit_true_peak(&mut buf, -1.0);
+    assert_eq!(buf.samples, original);
   }
 
   #[test]

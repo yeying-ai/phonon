@@ -785,6 +785,11 @@ async fn main() -> anyhow::Result<()> {
           lufs, true_peak
         );
         phonon_core::normalize_lufs(&mut episode.audio, *lufs, *true_peak);
+        let after = phonon_core::measure_loudness(&episode.audio);
+        println!(
+          "Reached {:.2} LUFS / true peak {:.2} dBTP",
+          after.integrated_lufs, after.true_peak_dbtp
+        );
       }
 
       // Title in tags falls back to the script title.
