@@ -234,9 +234,10 @@
   - 做法:`Segment` 加可选 `chapter` 标题，脚本生成提示词让 LLM 标 3–6 个话题章节;有标注时按标注出章节，没有时保持原行为
   - 验收：重新生成本期，章节 3–6 个，标题是话题
   - DONE: `Segment.chapter` 可选;有标题时按标题分章节，否则仍按换人;提示词要求 3–6 章。重新生成同题脚本，MiniMax 标出 5 章(如「内容比蓝光更上头」),导出后 5 个章节，每章 33–63 s(a38ba00)
-- [ ] **K5** 换 provider 必须手改脚本 JSON 里的音色，而且没地方查某家有哪些音色(Qwen / GLM 报 "音色不存在")
+- [x] **K5** 换 provider 必须手改脚本 JSON 里的音色，而且没地方查某家有哪些音色(Qwen / GLM 报 "音色不存在")
   - 做法：预置带一组联网验证过的音色(第一个即默认),`phonon providers` 列出;`episode-export` / `podcast generate` 支持 `--voice 说话人=音色` 覆盖
   - 验收：同一份脚本用 `--voice` 在 Qwen、GLM 上导出成功
+  - DONE: 预置改为音色表(首个为默认),MiniMax 6 / Qwen 7 / GLM 7 / StepFun 6 / Edge 4 个音色逐个联网通过，虚构音色五家都返回错误;`--voice 说话人=音色` 可重复;同一份脚本经 Qwen(Ethan/Cherry)、GLM(xiaochen/tongtong)导出成功(c5ccb26)
 - [ ] **K6** CLI 没有"选题 → 脚本"入口(只有库 API),`ScriptRequest` 默认音色是 OpenAI 的 alloy / echo
   - 做法:`phonon podcast script --topic … -o script.json`,用配置的 LLM;主持人和嘉宾音色取 TTS provider 音色表的前两个
   - 验收：用这条命令加 `episode-export` 从选题出一期，字幕、章节、响度都符合 K2–K4
