@@ -27,6 +27,12 @@ Items K1–K6 in [Todos.md](./Todos.md).
   the LLM for 3–6 of them. **BREAKING** (library): `Segment` struct literals need
   `chapter: None`.
 
+### Added
+
+- Presets list voices verified against the live APIs (`AnyTts::voices`, shown by
+  `phonon providers`), and `episode-export` / `podcast generate|preview` take
+  `--voice SPEAKER=VOICE` to swap a script's voices for another provider's.
+
 ## v0.8.0 - 2026-10-20 — configurable model providers
 
 Items J1–J10 in [Todos.md](./Todos.md); usage and design record in

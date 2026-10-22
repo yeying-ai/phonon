@@ -74,9 +74,12 @@ phonon video replace --video talk.mp4 --audio dub.wav --output dubbed.mp4
 phonon video probe   --input talk.mp4
 
 # 14. Generate or preview a podcast from a JSON script
-#     (the script's voice_ids must belong to the provider, e.g. --provider edge)
+#     (the script's voice_ids must belong to the provider; `--voice` reassigns them,
+#     `phonon providers` lists each preset's voices)
 phonon podcast generate --script ep01.json --output ep01.wav
 phonon podcast preview  --script ep01.json --segment 0 --output preview.wav
+phonon episode-export   --script ep01.json --output ep01.mp3 \
+  --provider qwen --voice host=Ethan --voice guest=Cherry
 ```
 
 ---

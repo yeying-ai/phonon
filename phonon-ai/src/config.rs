@@ -126,7 +126,8 @@ struct TtsPreset {
   protocol: Protocol,
   base_url: &'static str,
   model: &'static str,
-  voice: &'static str,
+  /// Voices checked against the live API; the first is the default.
+  voices: &'static [&'static str],
   format: &'static str,
   /// Per-request text limit in characters.
   max_chars: Option<usize>,
@@ -166,7 +167,14 @@ const PRESETS: &[Preset] = &[
       protocol: Protocol::MiniMax,
       base_url: MINIMAX,
       model: "speech-2.8-hd",
-      voice: "male-qn-qingse",
+      voices: &[
+        "male-qn-qingse",
+        "female-shaonv",
+        "male-qn-jingying",
+        "female-yujie",
+        "presenter_male",
+        "presenter_female",
+      ],
       format: "mp3",
       max_chars: Some(5000),
     }),
@@ -191,7 +199,9 @@ const PRESETS: &[Preset] = &[
       protocol: Protocol::Qwen,
       base_url: DASHSCOPE,
       model: "qwen3-tts-flash",
-      voice: "Cherry",
+      voices: &[
+        "Cherry", "Ethan", "Serena", "Ryan", "Chelsie", "Nofish", "Jennifer",
+      ],
       format: "wav",
       // The API accepts 600, but near that length the same text comes back
       // 1.2x to 5x too long; 200 measured stable (docs/providers.md).
@@ -218,7 +228,9 @@ const PRESETS: &[Preset] = &[
       protocol: Protocol::OpenAi,
       base_url: ZHIPU,
       model: "glm-tts",
-      voice: "tongtong",
+      voices: &[
+        "tongtong", "xiaochen", "chuichui", "jam", "kazi", "douji", "luodo",
+      ],
       format: "wav",
       max_chars: Some(1024),
     }),
@@ -244,7 +256,14 @@ const PRESETS: &[Preset] = &[
       protocol: Protocol::OpenAi,
       base_url: STEPFUN,
       model: "step-tts-2",
-      voice: "cixingnansheng",
+      voices: &[
+        "cixingnansheng",
+        "yuanqishaonv",
+        "zhengpaiqingnian",
+        "qingchunshaonv",
+        "wenrounansheng",
+        "elegantgentle-female",
+      ],
       format: "wav",
       max_chars: Some(1000),
     }),
@@ -280,7 +299,7 @@ const PRESETS: &[Preset] = &[
       protocol: Protocol::OpenAi,
       base_url: OPENAI,
       model: "tts-1",
-      voice: "alloy",
+      voices: &["alloy"],
       format: "mp3",
       max_chars: Some(4096),
     }),
@@ -305,7 +324,7 @@ const PRESETS: &[Preset] = &[
       protocol: Protocol::ElevenLabs,
       base_url: "https://api.elevenlabs.io/v1",
       model: "eleven_multilingual_v2",
-      voice: "21m00Tcm4TlvDq8ikWAM",
+      voices: &["21m00Tcm4TlvDq8ikWAM"],
       format: "mp3",
       max_chars: Some(5000),
     }),
@@ -319,7 +338,12 @@ const PRESETS: &[Preset] = &[
       protocol: Protocol::Edge,
       base_url: "",
       model: "",
-      voice: "zh-CN-XiaoxiaoNeural",
+      voices: &[
+        "zh-CN-XiaoxiaoNeural",
+        "zh-CN-YunxiNeural",
+        "zh-CN-YunyangNeural",
+        "zh-CN-XiaoyiNeural",
+      ],
       format: "mp3",
       max_chars: None,
     }),
@@ -530,10 +554,11 @@ impl Config {
       &name,
       ep.protocol,
     )?;
+    let voices = defaults.map_or(&[][..], |d| d.voices);
     let voice = section
       .voice
       .clone()
-      .or_else(|| defaults.map(|d| d.voice.to_string()))
+      .or_else(|| voices.first().map(|v| v.to_string()))
       .unwrap_or_default();
     let format = section
       .format
@@ -560,6 +585,7 @@ impl Config {
       provider: ep.provider,
       model,
       voice,
+      voices,
       max_chars: section.max_chars.or(defaults.and_then(|d| d.max_chars)),
     })
   }
@@ -699,6 +725,7 @@ pub struct AnyTts {
   provider: String,
   model: String,
   voice: String,
+  voices: &'static [&'static str],
   max_chars: Option<usize>,
 }
 
@@ -717,6 +744,11 @@ impl AnyTts {
   /// without `voice`).
   pub fn default_voice(&self) -> &str {
     &self.voice
+  }
+
+  /// The preset's voices known to work (empty for custom providers).
+  pub fn voices(&self) -> &'static [&'static str] {
+    self.voices
   }
 
   /// Per-request text limit; longer text is synthesized in chunks.

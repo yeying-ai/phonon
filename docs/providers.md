@@ -58,7 +58,9 @@ api_key_env = "LOCAL_TTS_KEY"          # 可选;不填则不发送鉴权头
 ```
 
 命令行里 `--provider` / `--model` 覆盖配置(换 provider 时该节其他设置一并作废),
-`phonon providers` 打印实际解析结果。播客脚本里的 `voice_id` 属于某个厂商，换 provider 要换脚本音色。
+`phonon providers` 打印实际解析结果和该预置可用的音色。播客脚本里的 `voice_id` 属于某个厂商,
+换 provider 时用 `--voice 说话人=音色`(可重复)替换，不必改脚本。预置音色表里的每个音色都经联网请求验证,
+不存在的音色各家都会返回错误。
 `phonon subtitle` 遇到不返回时间戳的 provider(StepFun)直接报错，不会写出空字幕。
 
 自定义 provider 没有默认模型和音色，需要在 `[tts]` / `[stt]` / `[llm]` 里写 `model`(TTS 还要 `voice`)。

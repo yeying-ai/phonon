@@ -60,6 +60,35 @@ struct ProviderArgs {
   model: Option<String>,
 }
 
+/// A podcast script, with voices reassigned from the command line.
+#[derive(Args)]
+struct ScriptArgs {
+  /// PodcastScript JSON path
+  #[arg(short, long)]
+  script: PathBuf,
+  /// Use this voice for a speaker instead of the script's, e.g.
+  /// `--voice host=Ethan`; repeat per speaker. `phonon providers` lists voices.
+  #[arg(long = "voice", value_name = "SPEAKER=VOICE")]
+  voices: Vec<String>,
+}
+
+impl ScriptArgs {
+  fn load(&self) -> anyhow::Result<PodcastScript> {
+    let mut script = PodcastScript::from_file(&self.script)?;
+    for assignment in &self.voices {
+      let (speaker, voice) = assignment
+        .split_once('=')
+        .ok_or_else(|| anyhow::anyhow!("--voice expects SPEAKER=VOICE, got {assignment:?}"))?;
+      let known = script.speaker_names().join(", ");
+      let config = script.speakers.get_mut(speaker).ok_or_else(|| {
+        anyhow::anyhow!("--voice: no speaker {speaker:?} in the script (speakers: {known})")
+      })?;
+      config.voice_id = voice.to_string();
+    }
+    Ok(script)
+  }
+}
+
 #[derive(Subcommand)]
 enum Commands {
   /// Inspect an audio file
@@ -268,13 +297,12 @@ enum Commands {
   /// One-shot: script -> tagged MP3 + sidecar SRT, with LUFS normalization
   #[command(allow_negative_numbers = true)]
   EpisodeExport {
-    /// PodcastScript JSON path
-    #[arg(short, long)]
-    script: PathBuf,
+    #[command(flatten)]
+    script: ScriptArgs,
     /// Output MP3 path (must end in .mp3)
     #[arg(short, long)]
     output: PathBuf,
-    /// TTS provider; the script's voice ids must belong to it
+    /// TTS provider; the script's voice ids (or `--voice`) must belong to it
     #[command(flatten)]
     provider: ProviderArgs,
     /// MP3 bitrate in kbps
@@ -348,9 +376,8 @@ enum VideoAction {
 enum PodcastAction {
   /// Generate a complete podcast from a script file
   Generate {
-    /// Path to the podcast script JSON file
-    #[arg(short, long)]
-    script: PathBuf,
+    #[command(flatten)]
+    script: ScriptArgs,
     /// Output audio file path
     #[arg(short, long)]
     output: PathBuf,
@@ -359,9 +386,8 @@ enum PodcastAction {
   },
   /// Preview a single segment from a script
   Preview {
-    /// Path to the podcast script JSON file
-    #[arg(short, long)]
-    script: PathBuf,
+    #[command(flatten)]
+    script: ScriptArgs,
     /// Segment index to preview (0-based)
     #[arg(long)]
     segment: usize,
@@ -764,8 +790,8 @@ async fn main() -> anyhow::Result<()> {
         anyhow::bail!("--output must be a .mp3 path (got {:?})", output);
       }
 
-      println!("Loading script from {:?}...", script);
-      let podcast_script = PodcastScript::from_file(script)?;
+      println!("Loading script from {:?}...", script.script);
+      let podcast_script = script.load()?;
       println!(
         "'{}' — {} segments, {} speakers",
         podcast_script.title,
@@ -828,13 +854,18 @@ async fn main() -> anyhow::Result<()> {
     Commands::Providers => {
       let config = Config::load(cli.config.as_deref())?;
       match config.tts() {
-        Ok(t) => println!(
-          "tts: {} (model: {}, voice: {}, max_chars: {})",
-          t.provider(),
-          or_dash(t.model()),
-          or_dash(t.default_voice()),
-          t.max_chars().map_or("-".to_string(), |n| n.to_string())
-        ),
+        Ok(t) => {
+          println!(
+            "tts: {} (model: {}, voice: {}, max_chars: {})",
+            t.provider(),
+            or_dash(t.model()),
+            or_dash(t.default_voice()),
+            t.max_chars().map_or("-".to_string(), |n| n.to_string())
+          );
+          if !t.voices().is_empty() {
+            println!("     voices: {}", t.voices().join(", "));
+          }
+        }
         Err(e) => println!("tts: unavailable: {e}"),
       }
       match config.stt() {
@@ -857,8 +888,8 @@ async fn main() -> anyhow::Result<()> {
         output,
         provider,
       } => {
-        println!("Loading script from {:?}...", script);
-        let podcast_script = PodcastScript::from_file(script)?;
+        println!("Loading script from {:?}...", script.script);
+        let podcast_script = script.load()?;
         println!(
           "Script '{}': {} segments, {} speakers",
           podcast_script.title,
@@ -878,7 +909,7 @@ async fn main() -> anyhow::Result<()> {
         output,
         provider,
       } => {
-        let podcast_script = PodcastScript::from_file(script)?;
+        let podcast_script = script.load()?;
         let tts = build_tts(cli.config.as_deref(), provider)?;
         let pipeline = PodcastPipeline::new(tts);
 
@@ -971,6 +1002,36 @@ fn load_chapters_json(path: &std::path::Path) -> anyhow::Result<Vec<AudioChapter
 mod helper_tests {
   use super::*;
   use std::io::Write;
+
+  fn script_args(voices: &[&str]) -> (tempfile::NamedTempFile, ScriptArgs) {
+    let mut file = tempfile::NamedTempFile::new().unwrap();
+    write!(
+      file,
+      r#"{{"title": "T", "speakers": {{"host": {{"voice_id": "alloy"}}}},
+          "segments": [{{"speaker": "host", "text": "Hi"}}]}}"#
+    )
+    .unwrap();
+    let args = ScriptArgs {
+      script: file.path().to_path_buf(),
+      voices: voices.iter().map(|v| v.to_string()).collect(),
+    };
+    (file, args)
+  }
+
+  #[test]
+  fn test_voice_flag_replaces_the_scripts_voice() {
+    let (_file, args) = script_args(&["host=Ethan"]);
+    let script = args.load().unwrap();
+    assert_eq!(script.speakers["host"].voice_id, "Ethan");
+  }
+
+  #[test]
+  fn test_voice_flag_rejects_unknown_speakers_and_bad_syntax() {
+    let (_file, args) = script_args(&["guest=Ethan"]);
+    assert!(args.load().is_err());
+    let (_file, args) = script_args(&["host"]);
+    assert!(args.load().is_err());
+  }
 
   #[test]
   fn test_load_cover_none() {
