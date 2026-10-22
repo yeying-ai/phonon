@@ -15,6 +15,11 @@ Items K1–K6 in [Todos.md](./Todos.md).
   episode exported at -18.5 LUFS against a -16 target; it now lands at -16.0.
   `episode-export` prints the loudness it reached.
 - `phonon stt` prints its progress line to stderr, so `--json` output can be piped.
+- Script generation ran out of `max_tokens` (4096) on reasoning models: every
+  StepFun chat model reasons and cannot turn it off, leaving empty content. The
+  limit is 16384 (accepted by all five vendors), the StepFun preset sets
+  `reasoning_effort: low`, and a cut-off reply is reported as such instead of as
+  a JSON parse error. 12 of 12 runs across five vendors now parse.
 - Episode subtitles were one cue per script segment (54 characters and 11 s on
   average). Segments are now split at sentence and clause boundaries into cues of
   at most 24 CJK / 84 other characters, timed by their share of the letters.
@@ -24,11 +29,15 @@ Items K1–K6 in [Todos.md](./Todos.md).
 - Episode chapters were one per speaker change, so a dialogue got one chapter per
   segment titled "host" / "guest". `Segment` has an optional `chapter` title;
   when any segment has one, chapters follow the titles. The script generator asks
-  the LLM for 3–6 of them. **BREAKING** (library): `Segment` struct literals need
+  the LLM for 3–6 chapters, each holding its segments (a per-segment `chapter`
+  key made 4 of 7 LLM runs return invalid JSON). **BREAKING** (library): `Segment` struct literals need
   `chapter: None`.
 
 ### Added
 
+- `phonon podcast script --topic … -o script.json`: the configured LLM (`--llm` to
+  override, `Config::override_llm`) writes a two-speaker script; host and guest get
+  the TTS provider's first two voices.
 - Presets list voices verified against the live APIs (`AnyTts::voices`, shown by
   `phonon providers`), and `episode-export` / `podcast generate|preview` take
   `--voice SPEAKER=VOICE` to swap a script's voices for another provider's.

@@ -22,6 +22,7 @@ Command-line interface for the Phonon audio engine.
 | `video extract` | Extract audio from video |
 | `video replace` | Replace video audio track |
 | `video probe` | Probe media streams |
+| `podcast script` | Write a two-speaker script on a topic with the configured LLM |
 | `podcast generate` | Generate podcast from script |
 | `podcast preview` | Preview single segment |
 | `episode-export` | Script → tagged MP3 + SRT |

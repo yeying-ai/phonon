@@ -278,7 +278,9 @@ const PRESETS: &[Preset] = &[
     llm: Some(LlmPreset {
       base_url: STEPFUN,
       model: "step-3.7-flash",
-      extra: "{}",
+      // Every StepFun chat model reasons and none can turn it off; "low"
+      // is the only setting that shortens it (measured 2026-10-22).
+      extra: r#"{"reasoning_effort": "low"}"#,
     }),
   },
   Preset {
@@ -441,6 +443,18 @@ impl Config {
       };
     }
     self.stt.model = model.or(self.stt.model.take());
+  }
+
+  /// Override `[llm] provider` / `model` where given; a different provider
+  /// replaces the whole section.
+  pub fn override_llm(&mut self, provider: Option<String>, model: Option<String>) {
+    if provider.is_some() && provider != self.llm.provider {
+      self.llm = LlmSection {
+        provider,
+        ..LlmSection::default()
+      };
+    }
+    self.llm.model = model.or(self.llm.model.take());
   }
 
   /// Build the configured TTS provider.
@@ -1034,6 +1048,18 @@ mod tests {
     let mut config = base;
     config.override_stt(None, None);
     assert_eq!(config.stt_with(&env).expect("stt").max_secs(), Some(10));
+
+    // LLM: another provider drops the old model and extra body.
+    let mut config =
+      Config::from_toml("[llm]\nprovider = \"deepseek\"\nmodel = \"m\"\nextra = { a = 1 }")
+        .expect("parse");
+    config.override_llm(Some("glm".into()), None);
+    let llm = config.llm_with(&env).expect("llm");
+    assert_eq!(
+      (llm.provider.as_str(), llm.model.as_str()),
+      ("glm", "glm-4.7")
+    );
+    assert!(!llm.extra.contains_key("a"));
   }
 
   #[test]

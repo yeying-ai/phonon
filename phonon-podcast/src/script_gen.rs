@@ -21,7 +21,7 @@
 use crate::PodcastError;
 use crate::script::{PodcastScript, Segment};
 use phonon_ai::{AiError, VoiceConfig};
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::HashMap;
 use std::future::Future;
 use tracing::{info, instrument};
@@ -160,18 +160,58 @@ impl ScriptRequest {
 }
 
 /// LLM response format — the structure we ask the LLM to output.
-#[derive(Debug, Deserialize, Serialize)]
+///
+/// Segments are grouped under chapters so that every object has the same
+/// keys: asked for a per-segment `chapter` key present on only some
+/// segments, 4 of 7 runs across five vendors returned invalid JSON
+/// (duplicate or missing `text`). A flat `segments` list is still accepted
+/// for custom system prompts written for the old format.
+#[derive(Debug, Deserialize)]
 struct LlmScriptResponse {
+  title: String,
+  #[serde(default)]
+  chapters: Vec<LlmChapter>,
+  #[serde(default)]
+  segments: Vec<LlmSegment>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LlmChapter {
   title: String,
   segments: Vec<LlmSegment>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize)]
 struct LlmSegment {
   speaker: String,
   text: String,
-  #[serde(default, skip_serializing_if = "Option::is_none")]
-  chapter: Option<String>,
+}
+
+impl LlmScriptResponse {
+  /// Flatten into script segments, dropping unknown speakers and empty
+  /// text; each chapter's title goes on its first kept segment.
+  fn into_segments(self, speakers: &HashMap<String, VoiceConfig>) -> Vec<Segment> {
+    let untitled = std::iter::once((None, self.segments));
+    let titled = self
+      .chapters
+      .into_iter()
+      .map(|c| (Some(c.title).filter(|t| !t.trim().is_empty()), c.segments));
+    let mut out = Vec::new();
+    for (mut chapter, segments) in untitled.chain(titled) {
+      for s in segments {
+        if !speakers.contains_key(&s.speaker) || s.text.trim().is_empty() {
+          continue;
+        }
+        out.push(Segment {
+          speaker: s.speaker,
+          text: s.text,
+          language: None,
+          chapter: chapter.take(),
+        });
+      }
+    }
+    out
+  }
 }
 
 /// OpenAI-compatible LLM script generator.
@@ -256,15 +296,14 @@ impl OpenAiScriptGenerator {
 Rules:
 1. Output ONLY valid JSON (no markdown, no code fences, no explanation).
 2. The JSON must have this exact structure:
-   {{"title": "...", "segments": [{{"speaker": "...", "text": "...", "chapter": "..."}}]}}
+   {{"title": "...", "chapters": [{{"title": "...", "segments": [{{"speaker": "...", "text": "..."}}]}}]}}
 3. Use ONLY the speaker names listed below.
-4. Generate approximately {} dialogue segments.
+4. Generate approximately {} dialogue segments in total.
 5. The conversation should feel natural, with back-and-forth exchanges.
 6. Use the language: {}.
 7. Each segment should be 1-3 sentences (natural speech length for TTS).
-8. Divide the episode into 3-6 chapters by sub-topic. Give "chapter" (a short title, in
-   the script's language) only on the segment that opens a chapter, starting with the
-   first segment; omit it everywhere else.
+8. Group the segments into 3-6 chapters by sub-topic, each with a short title in the
+   script's language.
 
 Speakers:
 {}
@@ -298,7 +337,9 @@ impl ScriptGenerator for OpenAiScriptGenerator {
         "model": self.model,
         "messages": messages,
         "temperature": 0.8,
-        "max_tokens": 4096,
+        // Room for reasoning models (all StepFun chat models) to think
+        // before writing ~1000 characters of script; 4096 ran out.
+        "max_tokens": 16384,
         "response_format": {"type": "json_object"}
     });
     if let Some(fields) = body.as_object_mut() {
@@ -338,8 +379,17 @@ impl ScriptGenerator for OpenAiScriptGenerator {
     .await
     .map_err(|e| PodcastError::Script(format!("LLM request failed: {e}")))?;
 
+    let choice = &resp_json["choices"][0];
+    if choice["finish_reason"] == "length" {
+      return Err(PodcastError::Script(format!(
+        "LLM output was cut off at max_tokens (usage: {}); the model likely spent \
+         them reasoning — pick a model or `[llm] extra` that reasons less",
+        resp_json["usage"]
+      )));
+    }
+
     // Extract the assistant message content
-    let content = resp_json["choices"][0]["message"]["content"]
+    let content = choice["message"]["content"]
       .as_str()
       .ok_or_else(|| PodcastError::Script("LLM response missing content field".to_string()))?;
 
@@ -362,17 +412,8 @@ impl ScriptGenerator for OpenAiScriptGenerator {
       );
     }
 
-    let segments: Vec<Segment> = llm_response
-      .segments
-      .into_iter()
-      .filter(|s| speakers.contains_key(&s.speaker) && !s.text.trim().is_empty())
-      .map(|s| Segment {
-        speaker: s.speaker,
-        text: s.text,
-        language: None,
-        chapter: s.chapter.filter(|c| !c.trim().is_empty()),
-      })
-      .collect();
+    let title = llm_response.title.clone();
+    let segments = llm_response.into_segments(&speakers);
 
     if segments.is_empty() {
       return Err(PodcastError::Script(
@@ -381,7 +422,7 @@ impl ScriptGenerator for OpenAiScriptGenerator {
     }
 
     let script = PodcastScript {
-      title: llm_response.title,
+      title,
       speakers,
       segments,
       config: Default::default(),
@@ -475,6 +516,28 @@ mod tests {
     assert_eq!(result.unwrap().segment_count(), 2);
   }
 
+  #[tokio::test]
+  async fn test_truncated_output_is_reported_as_truncation() {
+    let cut = serde_json::json!({
+      "choices": [{"finish_reason": "length", "message": {"content": "{\"title\": \"T"}}],
+      "usage": {"completion_tokens": 16384}
+    })
+    .to_string();
+    let (url, _) = serve(vec![(200, cut)]).await;
+
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let generator = OpenAiScriptGenerator::with_client(
+      phonon_ai::HttpClient::with_client(http, "k", url),
+      "test-model",
+    );
+    let err = generator
+      .generate(&ScriptRequest::new("topic"))
+      .await
+      .unwrap_err()
+      .to_string();
+    assert!(err.contains("max_tokens"), "{err}");
+  }
+
   #[test]
   fn test_script_request_defaults() {
     let req = ScriptRequest::new("AI and Music");
@@ -560,51 +623,32 @@ mod tests {
   }
 
   #[test]
-  fn test_llm_response_to_podcast_script() {
-    // Simulate what the generate method does after parsing the LLM response
-    let llm_response = LlmScriptResponse {
-      title: "Test Episode".to_string(),
-      segments: vec![
-        LlmSegment {
-          speaker: "host".to_string(),
-          text: "Welcome!".to_string(),
-          chapter: None,
-        },
-        LlmSegment {
-          speaker: "guest".to_string(),
-          text: "Thanks!".to_string(),
-          chapter: None,
-        },
-        LlmSegment {
-          speaker: "unknown".to_string(),
-          text: "This should be filtered".to_string(),
-          chapter: None,
-        },
-      ],
-    };
-
-    let request = ScriptRequest::new("Test");
-    let mut speakers = HashMap::new();
-    for sd in &request.speakers {
-      speakers.insert(sd.name.clone(), VoiceConfig::new(&sd.voice_id));
-    }
-
-    let segments: Vec<Segment> = llm_response
-      .segments
-      .into_iter()
-      .filter(|s| speakers.contains_key(&s.speaker) && !s.text.trim().is_empty())
-      .map(|s| Segment {
-        speaker: s.speaker,
-        text: s.text,
-        language: None,
-        chapter: None,
-      })
+  fn test_llm_chapters_flatten_to_titled_segments() {
+    let json = r#"{"title": "T", "chapters": [
+      {"title": "Intro", "segments": [
+        {"speaker": "nobody", "text": "dropped"},
+        {"speaker": "host", "text": "Welcome!"},
+        {"speaker": "guest", "text": "Thanks!"}]},
+      {"title": "Main", "segments": [{"speaker": "host", "text": "So."}]}
+    ]}"#;
+    let response: LlmScriptResponse = serde_json::from_str(json).unwrap();
+    let speakers = HashMap::from([
+      ("host".to_string(), VoiceConfig::new("a")),
+      ("guest".to_string(), VoiceConfig::new("b")),
+    ]);
+    let segments = response.into_segments(&speakers);
+    let got: Vec<(&str, Option<&str>)> = segments
+      .iter()
+      .map(|s| (s.text.as_str(), s.chapter.as_deref()))
       .collect();
-
-    // "unknown" speaker should be filtered out
-    assert_eq!(segments.len(), 2);
-    assert_eq!(segments[0].speaker, "host");
-    assert_eq!(segments[1].speaker, "guest");
+    assert_eq!(
+      got,
+      [
+        ("Welcome!", Some("Intro")),
+        ("Thanks!", None),
+        ("So.", Some("Main"))
+      ]
+    );
   }
 
   #[test]

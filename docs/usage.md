@@ -73,7 +73,12 @@ phonon video extract --input talk.mp4 --output talk.wav
 phonon video replace --video talk.mp4 --audio dub.wav --output dubbed.mp4
 phonon video probe   --input talk.mp4
 
-# 14. Generate or preview a podcast from a JSON script
+# 14. Write a script on a topic with the configured LLM (host/guest voices come
+#     from the TTS provider's list; chapters are marked by the LLM), then export
+phonon podcast script --topic "普通人怎么开始第一次长跑" -o ep01.json --provider qwen
+phonon episode-export --script ep01.json --output ep01.mp3 --provider qwen
+
+# 15. Generate or preview a podcast from a JSON script
 #     (the script's voice_ids must belong to the provider; `--voice` reassigns them,
 #     `phonon providers` lists each preset's voices)
 phonon podcast generate --script ep01.json --output ep01.wav

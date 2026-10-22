@@ -5,7 +5,9 @@ use phonon_engine::AudioPlayer;
 use phonon_io::{AudioChapter, CoverArt, CoverMime, Mp3Config, PodcastTags, attach_tag};
 use phonon_podcast::chapters::{SilenceDetectConfig, chapters_from_silence, format_chapters_text};
 use phonon_podcast::subtitle::segments_to_srt_file;
-use phonon_podcast::{PodcastPipeline, PodcastScript};
+use phonon_podcast::{
+  OpenAiScriptGenerator, PodcastPipeline, PodcastScript, ScriptGenerator, ScriptRequest,
+};
 use std::path::PathBuf;
 use std::thread;
 use std::time::Duration;
@@ -374,6 +376,28 @@ enum VideoAction {
 
 #[derive(Subcommand)]
 enum PodcastAction {
+  /// Write a two-speaker script on a topic with the configured LLM
+  Script {
+    /// What the episode is about
+    #[arg(short, long)]
+    topic: String,
+    /// Output script JSON path
+    #[arg(short, long)]
+    output: PathBuf,
+    /// Approximate number of segments
+    #[arg(long, default_value_t = 16)]
+    segments: usize,
+    /// Script language
+    #[arg(long, default_value = "zh-CN")]
+    language: String,
+    /// LLM provider (preset or `[providers.*]` name); default: config, then
+    /// the first preset whose API key is set
+    #[arg(long)]
+    llm: Option<String>,
+    /// TTS provider whose first two voices go to host and guest
+    #[command(flatten)]
+    provider: ProviderArgs,
+  },
   /// Generate a complete podcast from a script file
   Generate {
     #[command(flatten)]
@@ -883,6 +907,59 @@ async fn main() -> anyhow::Result<()> {
       }
     }
     Commands::Podcast { action } => match action {
+      PodcastAction::Script {
+        topic,
+        output,
+        segments,
+        language,
+        llm,
+        provider,
+      } => {
+        let mut config = Config::load(cli.config.as_deref())?;
+        config.override_tts(provider.provider.clone(), provider.model.clone());
+        config.override_llm(llm.clone(), None);
+        let tts = config.tts()?;
+        let endpoint = config.llm()?;
+
+        // Host and guest get different voices when the preset lists two.
+        let host_voice = tts.default_voice().to_string();
+        let guest_voice = tts
+          .voices()
+          .iter()
+          .find(|v| **v != host_voice)
+          .map_or(host_voice.clone(), |v| v.to_string());
+        if guest_voice == host_voice {
+          println!(
+            "Note: {} has one known voice; give the guest another with --voice guest=... when exporting",
+            tts.provider()
+          );
+        }
+        println!(
+          "Writing a script with {} ({}); voices from {}: host={host_voice}, guest={guest_voice}",
+          endpoint.provider,
+          endpoint.model,
+          tts.provider()
+        );
+        let request = ScriptRequest::new(topic.as_str())
+          .with_host("host", host_voice)
+          .with_guest("guest", guest_voice)
+          .with_target_segments(*segments)
+          .with_language(language.as_str());
+        let script = OpenAiScriptGenerator::from_endpoint(endpoint)
+          .generate(&request)
+          .await?;
+        std::fs::write(output, serde_json::to_string_pretty(&script)?)?;
+
+        println!(
+          "'{}' — {} segments -> {:?}",
+          script.title,
+          script.segments.len(),
+          output
+        );
+        for chapter in script.segments.iter().filter_map(|s| s.chapter.as_deref()) {
+          println!("  chapter: {chapter}");
+        }
+      }
       PodcastAction::Generate {
         script,
         output,
