@@ -37,6 +37,9 @@ Items K1–K6 in [Todos.md](./Todos.md).
   exports one request got two 429s in a row, one short of failing the episode.
 - Qwen TTS requests time out after 30 s instead of 120 s. About 1 request in 100
   stalls; one stall turned a 15 s export into 3 minutes, now 45 s.
+- `split_text` (TTS chunks and subtitle cues) ends English sentences at a period
+  followed by whitespace (not inside "2.5"), and cuts over-long clauses between
+  words instead of mid-word.
 
 ### Added
 

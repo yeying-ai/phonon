@@ -126,25 +126,25 @@ pub fn pcm_i16le_to_f32(bytes: &[u8]) -> Vec<f32> {
 
 /// Split `text` into chunks of at most `max_chars` characters for providers
 /// with a per-request limit: at sentence ends where possible, then at
-/// commas, then anywhere. Whitespace-only chunks are dropped.
+/// commas, then between words, then anywhere. Whitespace-only chunks are
+/// dropped.
 pub fn split_text(text: &str, max_chars: usize) -> Vec<String> {
   const SENTENCE: &[char] = &['。', '！', '？', '；', '!', '?', ';', '\n'];
   const CLAUSE: &[char] = &['，', '、', '：', ',', ':'];
   let max_chars = max_chars.max(1);
+  // "2.5" and "e.g.x" aren't sentence ends; a period before a space is.
+  let sentence_end = |c: char, next: Option<char>| {
+    SENTENCE.contains(&c) || (c == '.' && next.is_none_or(char::is_whitespace))
+  };
 
   let mut pieces = Vec::new();
-  for sentence in split_after(text, SENTENCE) {
+  for sentence in split_after(text, sentence_end) {
     if sentence.chars().count() <= max_chars {
       pieces.push(sentence.to_string());
       continue;
     }
-    for clause in split_after(sentence, CLAUSE) {
-      let chars: Vec<char> = clause.chars().collect();
-      pieces.extend(
-        chars
-          .chunks(max_chars)
-          .map(|c| c.iter().collect::<String>()),
-      );
+    for clause in split_after(sentence, |c, _| CLAUSE.contains(&c)) {
+      pieces.extend(cut_between_words(clause, max_chars));
     }
   }
 
@@ -161,12 +161,14 @@ pub fn split_text(text: &str, max_chars: usize) -> Vec<String> {
   chunks
 }
 
-/// Split after every occurrence of a delimiter, keeping it with its piece.
-fn split_after<'a>(text: &'a str, delimiters: &[char]) -> Vec<&'a str> {
+/// Split after every character where `is_end(c, next)` holds, keeping it
+/// with its piece.
+fn split_after(text: &str, is_end: impl Fn(char, Option<char>) -> bool) -> Vec<&str> {
   let mut pieces = Vec::new();
   let mut start = 0;
-  for (i, c) in text.char_indices() {
-    if delimiters.contains(&c) {
+  let mut chars = text.char_indices().peekable();
+  while let Some((i, c)) = chars.next() {
+    if is_end(c, chars.peek().map(|&(_, n)| n)) {
       let end = i + c.len_utf8();
       pieces.push(&text[start..end]);
       start = end;
@@ -174,6 +176,28 @@ fn split_after<'a>(text: &'a str, delimiters: &[char]) -> Vec<&'a str> {
   }
   if start < text.len() {
     pieces.push(&text[start..]);
+  }
+  pieces
+}
+
+/// Cut `text` into pieces of at most `max_chars`, each ending after the last
+/// whitespace that fits; a word longer than `max_chars` (or CJK text, which
+/// has no spaces) is cut anywhere.
+fn cut_between_words(text: &str, max_chars: usize) -> Vec<String> {
+  let chars: Vec<char> = text.chars().collect();
+  let mut pieces = Vec::new();
+  let mut rest = &chars[..];
+  while rest.len() > max_chars {
+    let window = &rest[..max_chars];
+    let cut = window
+      .iter()
+      .rposition(|c| c.is_whitespace())
+      .map_or(max_chars, |i| i + 1);
+    pieces.push(rest[..cut].iter().collect());
+    rest = &rest[cut..];
+  }
+  if !rest.is_empty() {
+    pieces.push(rest.iter().collect());
   }
   pieces
 }
@@ -401,13 +425,41 @@ mod tests {
   }
 
   #[test]
+  fn test_split_text_english_sentences_and_words() {
+    // A period ends a sentence only before whitespace or the end.
+    assert_eq!(
+      split_text(
+        "Running is simple. Start slow, version 2.5 helps. Done.",
+        32
+      ),
+      [
+        "Running is simple.",
+        " Start slow, version 2.5 helps.",
+        " Done."
+      ]
+    );
+    // Over the limit without punctuation: cut between words, not inside one.
+    assert_eq!(
+      split_text("the quick brown fox jumps over", 12),
+      ["the quick ", "brown fox ", "jumps over"]
+    );
+  }
+
+  #[test]
   fn test_split_text_respects_limit_and_keeps_text() {
-    let text = "音频处理很有趣，我们今天聊响度。为什么要标准化？因为听众会切换节目！".repeat(7);
-    for max in [1, 7, 20, 64, 600] {
+    let text = "音频处理很有趣，我们今天聊响度。为什么要标准化？因为听众会切换节目！".repeat(7)
+      + &"Loudness matters. Version 2.5 of the spec, e.g. this one, says so: listeners switch shows!"
+        .repeat(5);
+    for max in [7, 20, 64, 84, 600] {
       let chunks = split_text(&text, max);
       assert!(chunks.iter().all(|c| c.chars().count() <= max), "max {max}");
       assert_eq!(chunks.concat(), text, "max {max}");
     }
+    // At 1 char a lone space is its own chunk and is dropped as empty.
+    let squeeze = |t: &str| t.split_whitespace().collect::<String>();
+    let chunks = split_text(&text, 1);
+    assert!(chunks.iter().all(|c| c.chars().count() == 1));
+    assert_eq!(squeeze(&chunks.concat()), squeeze(&text));
   }
 
   #[test]
