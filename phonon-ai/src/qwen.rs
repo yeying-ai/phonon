@@ -24,6 +24,10 @@ use tracing::{info, instrument};
 /// Mainland endpoint; the international one is `https://dashscope-intl.aliyuncs.com/api/v1`.
 pub const DASHSCOPE_BASE_URL: &str = "https://dashscope.aliyuncs.com/api/v1";
 const GENERATION_PATH: &str = "services/aigc/multimodal-generation/generation";
+/// Per-attempt timeout for TTS. Requests of up to 200 characters return in
+/// 1-3 s, but about 1 in 100 stalls until the timeout; at the 120 s default
+/// one stall made a 15 s episode export take 3 minutes.
+pub(crate) const TTS_TIMEOUT_SECS: u64 = 30;
 
 /// Qwen TTS provider. Like [`crate::MiniMaxTts`], the model is set on the
 /// provider (default `qwen3-tts-flash`); [`VoiceConfig::model`] is ignored.
@@ -44,7 +48,7 @@ impl QwenTts {
     Ok(Self::with_client(HttpClient::new(
       api_key,
       DASHSCOPE_BASE_URL,
-      None,
+      Some(TTS_TIMEOUT_SECS),
     )?))
   }
 

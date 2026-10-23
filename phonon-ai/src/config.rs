@@ -588,7 +588,14 @@ impl Config {
           .with_base_url(ep.base_url.clone())?
           .with_model(model.clone()),
       ),
-      Protocol::Qwen => TtsBackend::Qwen(QwenTts::with_client(client()?).with_model(model.clone())),
+      Protocol::Qwen => TtsBackend::Qwen(
+        QwenTts::with_client(HttpClient::new(
+          ep.api_key.clone(),
+          ep.base_url.clone(),
+          Some(crate::qwen::TTS_TIMEOUT_SECS),
+        )?)
+        .with_model(model.clone()),
+      ),
       Protocol::Edge => TtsBackend::Edge(EdgeTts::new()),
       Protocol::ElevenLabs => {
         TtsBackend::ElevenLabs(ElevenLabsTts::with_client(client()?, model.clone()))

@@ -5,7 +5,7 @@ use std::time::Duration;
 use tracing::warn;
 
 /// Attempts per request in [`retry_transient`], including the first one.
-const MAX_ATTEMPTS: u32 = 3;
+const MAX_ATTEMPTS: u32 = 5;
 /// First backoff delay in [`retry_transient`]; doubles on each retry.
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
 /// Upper bound for establishing a connection, separate from the overall
@@ -17,8 +17,8 @@ pub(crate) fn env_key(name: &str) -> Result<String, AiError> {
   std::env::var(name).map_err(|_| AiError::Config(format!("{name} environment variable not set")))
 }
 
-/// Run `op`, retrying with exponential backoff (3 attempts, 500 ms then
-/// 1 s) while it fails with a [transient](AiError::is_transient) error.
+/// Run `op`, retrying with exponential backoff (5 attempts, waiting 0.5, 1,
+/// 2 and 4 s) while it fails with a [transient](AiError::is_transient) error.
 ///
 /// Only wrap requests that are safe to repeat: a retried TTS call costs
 /// another synthesis but has no other side effect.
@@ -225,9 +225,18 @@ mod tests {
     assert_eq!(calls, 3);
   }
 
+  /// DashScope answered the first requests of a 4-way burst with 429 twice
+  /// in a row in 2 of 4 episode exports; 3 attempts left one 429 of margin.
+  #[tokio::test]
+  async fn test_retry_outlasts_a_rate_limit_burst() {
+    let (result, calls) = run_with_errors((0..4).map(|_| api(429)).collect()).await;
+    assert_eq!(result.unwrap(), 7);
+    assert_eq!(calls, 5);
+  }
+
   #[tokio::test]
   async fn test_retry_gives_up_after_max_attempts() {
-    let (result, calls) = run_with_errors(vec![api(503), api(503), api(503), api(503)]).await;
+    let (result, calls) = run_with_errors((0..=MAX_ATTEMPTS).map(|_| api(503)).collect()).await;
     assert!(matches!(result, Err(AiError::Api { status: 503, .. })));
     assert_eq!(calls, MAX_ATTEMPTS);
   }

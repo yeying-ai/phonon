@@ -32,6 +32,11 @@ Items K1–K6 in [Todos.md](./Todos.md).
   the LLM for 3–6 chapters, each holding its segments (a per-segment `chapter`
   key made 4 of 7 LLM runs return invalid JSON). **BREAKING** (library): `Segment` struct literals need
   `chapter: None`.
+- Provider requests retry transient errors 5 times (waiting 0.5, 1, 2, 4 s) instead
+  of 3: DashScope rate-limits the start of a 4-way TTS burst, and in 2 of 4 Qwen
+  exports one request got two 429s in a row, one short of failing the episode.
+- Qwen TTS requests time out after 30 s instead of 120 s. About 1 request in 100
+  stalls; one stall turned a 15 s export into 3 minutes, now 45 s.
 
 ### Added
 
