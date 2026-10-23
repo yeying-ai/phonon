@@ -245,9 +245,10 @@
 
 ## v0.8.1 — K6 那期暴露的后续问题
 
-- [ ] **L3** GLM 默认音色组合(tongtong / xiaochen)的性别没核实，可能是同性别的两个音色;官方文档不标性别
+- [x] **L3** GLM 默认音色组合(tongtong / xiaochen)的性别没核实，可能是同性别的两个音色;官方文档不标性别
   - 做法：每个音色合成同一句，测中位基频(YIN);默认组合应一高一低
   - 验收：脚本对五家默认组合都通过;对一组已知同性别组合(GLM tongtong / chuichui)报错
+  - DONE: 五家默认组合实测都是一高一低(差 52–189 Hz),预置不用改;GLM 除 xiaochen 外 6 个音色都在 276 Hz 左右。新增 scripts/voice_pitch.py(YIN 中位基频,差 <40 Hz 退出 1),对 tongtong/chuichui 为红;音高表写进 docs/providers.md(99805a7)
 - [ ] **L1** Qwen TTS 导出慢:195 s 的一期要 180 s(MiniMax 36 s)
   - 做法：先测时间花在哪(逐段串行？单段延迟？),再决定并发
 - [ ] **L2** 英文字幕不按句号切:`split_text` 对英文 "." 不断句，只能按 84 字符硬切
