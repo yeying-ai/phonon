@@ -41,6 +41,9 @@ Items K1–K6 in [Todos.md](./Todos.md).
 - Presets list voices verified against the live APIs (`AnyTts::voices`, shown by
   `phonon providers`), and `episode-export` / `podcast generate|preview` take
   `--voice SPEAKER=VOICE` to swap a script's voices for another provider's.
+- `scripts/voice_pitch.py`: checks that each preset's first two voices (host and
+  guest) differ in median pitch by at least 40 Hz. All five pass; GLM's other five
+  voices share tongtong's register, so xiaochen is its only low voice.
 
 ## v0.8.0 - 2026-10-20 — configurable model providers
 

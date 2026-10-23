@@ -61,6 +61,20 @@ api_key_env = "LOCAL_TTS_KEY"          # 可选;不填则不发送鉴权头
 `phonon providers` 打印实际解析结果和该预置可用的音色。播客脚本里的 `voice_id` 属于某个厂商,
 换 provider 时用 `--voice 说话人=音色`(可重复)替换，不必改脚本。预置音色表里的每个音色都经联网请求验证,
 不存在的音色各家都会返回错误。
+
+`phonon podcast script` 让主持人和嘉宾用音色表的前两个。厂商文档不标性别(GLM 只列名字),
+`scripts/voice_pitch.py` 合成同一句后测中位基频，前两个相差不足 40 Hz 就退出 1。2026-10-23 实测
+(同一音色两次合成可差约 10 Hz):
+
+| 预置 | 默认组合(中位基频) | 其他音色 |
+| --- | --- | --- |
+| minimax | male-qn-qingse 182–190 Hz / female-shaonv 242–254 Hz | — |
+| qwen | Cherry 222–242 Hz / Ethan 154–158 Hz | — |
+| glm | tongtong 276 Hz / xiaochen 172–195 Hz | chuichui、jam、kazi、douji、luodo 都在 276 Hz 左右，与 tongtong 同一音区 |
+| stepfun | cixingnansheng 120–125 Hz / yuanqishaonv 276–314 Hz | — |
+| edge | XiaoxiaoNeural 271 Hz / YunxiNeural 203 Hz | — |
+
+GLM 只有 xiaochen 在低音区：用 `--voice` 换 GLM 音色时让一个说话人保留 xiaochen,否则两人音高接近。
 `phonon subtitle` 遇到不返回时间戳的 provider(StepFun)直接报错，不会写出空字幕。
 
 自定义 provider 没有默认模型和音色，需要在 `[tts]` / `[stt]` / `[llm]` 里写 `model`(TTS 还要 `voice`)。
