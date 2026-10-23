@@ -249,8 +249,9 @@
   - 做法：每个音色合成同一句，测中位基频(YIN);默认组合应一高一低
   - 验收：脚本对五家默认组合都通过;对一组已知同性别组合(GLM tongtong / chuichui)报错
   - DONE: 五家默认组合实测都是一高一低(差 52–189 Hz),预置不用改;GLM 除 xiaochen 外 6 个音色都在 276 Hz 左右。新增 scripts/voice_pitch.py(YIN 中位基频,差 <40 Hz 退出 1),对 tongtong/chuichui 为红;音高表写进 docs/providers.md(99805a7)
-- [ ] **L1** Qwen TTS 导出慢:195 s 的一期要 180 s(MiniMax 36 s)
+- [x] **L1** Qwen TTS 导出慢:195 s 的一期要 180 s(MiniMax 36 s)
   - 做法：先测时间花在哪(逐段串行？单段延迟？),再决定并发
+  - DONE: 不是合成慢:release 构建整期 15 s(合成 11 s)。180 s = debug 构建后期处理约 45 s + 一个请求挂起等满 120 s 超时。真正的问题是 429 突发限流(4 次中 2 次同一请求连续两次 429,离失败只差一次)和挂起。重试 3→5 次(新测试旧值为红);Qwen TTS 单次超时 120→30 s,实跑一次挂起 30 s 后重试 2 s 成功，整期 45 s(f5c9e30)
 - [ ] **L2** 英文字幕不按句号切:`split_text` 对英文 "." 不断句，只能按 84 字符硬切
 - [ ] **L5** 英文节目没跑过端到端(`--language en-US`),同时验证 L2
 - [ ] **L4** BGM 路径没实跑(无音乐文件、无音效 provider):用合成或 CC0 音乐跑 `episode-export --bgm`,看闪避和响度
