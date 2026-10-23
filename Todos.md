@@ -242,3 +242,14 @@
   - 做法:`phonon podcast script --topic … -o script.json`,用配置的 LLM;主持人和嘉宾音色取 TTS provider 音色表的前两个
   - 验收：用这条命令加 `episode-export` 从选题出一期，字幕、章节、响度都符合 K2–K4
   - DONE: `podcast script` + `--llm`;实跑暴露并修复两点:LLM 返回格式改为章节包段(原格式 7 次中 4 次 JSON 无效),max_tokens 4096→16384 + StepFun `reasoning_effort: low` + 截断时明确报错;五家共 12 次全部解析成功，各 3–5 章。端到端(MiniMax 写脚本 + Qwen TTS):195 s,4 章,-16.27 LUFS / -1.23 dBTP(MP3),字幕 57 条 ≤24 字、切分误差中位数 0.177 s;与 STT 的差异全是数字写法(五公里 vs 5)(41e8018)
+
+## v0.8.1 — K6 那期暴露的后续问题
+
+- [ ] **L3** GLM 默认音色组合(tongtong / xiaochen)的性别没核实，可能是同性别的两个音色;官方文档不标性别
+  - 做法：每个音色合成同一句，测中位基频(YIN);默认组合应一高一低
+  - 验收：脚本对五家默认组合都通过;对一组已知同性别组合(GLM tongtong / chuichui)报错
+- [ ] **L1** Qwen TTS 导出慢:195 s 的一期要 180 s(MiniMax 36 s)
+  - 做法：先测时间花在哪(逐段串行？单段延迟？),再决定并发
+- [ ] **L2** 英文字幕不按句号切:`split_text` 对英文 "." 不断句，只能按 84 字符硬切
+- [ ] **L5** 英文节目没跑过端到端(`--language en-US`),同时验证 L2
+- [ ] **L4** BGM 路径没实跑(无音乐文件、无音效 provider):用合成或 CC0 音乐跑 `episode-export --bgm`,看闪避和响度
