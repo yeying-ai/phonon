@@ -92,7 +92,7 @@ pipeline.generate_to_file(&script, "output.wav").await?;
 | intro_audio | null | 片头音频路径 |
 | outro_audio | null | 片尾音频路径 |
 | bgm_audio | null | 背景音乐路径 |
-| bgm_volume | 0.08 | BGM 音量 (0.0-1.0) |
+| bgm_volume | 0.08 | BGM 相对人声的音量 (0.0-1.0):先把音乐调到与人声同样的积分响度，再乘这个系数;0.08 即比人声低 22 LU,与音乐文件本身多响无关 |
 | crossfade_secs | 0.0 | 段落间交叉淡化 |
 | output_sample_rate | 44100 | 输出采样率 |
 | output_channels | 1 | 输出声道数 |

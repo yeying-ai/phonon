@@ -36,7 +36,9 @@ pub struct PipelineConfig {
   #[serde(default)]
   pub bgm_audio: Option<String>,
 
-  /// BGM volume level (0.0 - 1.0). Default: 0.08.
+  /// BGM level relative to the speech's loudness (0.0 - 1.0): the music is
+  /// first brought to the speech's integrated LUFS, then scaled by this.
+  /// Default 0.08, 22 LU under the speech whatever the file's mastering.
   #[serde(default = "default_bgm_volume")]
   pub bgm_volume: f32,
 

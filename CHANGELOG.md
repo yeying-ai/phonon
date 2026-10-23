@@ -56,6 +56,13 @@ Items K1–K6 in [Todos.md](./Todos.md).
   guest) differ in median pitch by at least 40 Hz. All five pass; GLM's other five
   voices share tongtong's register, so xiaochen is its only low voice.
 
+### Changed
+
+- `bgm_volume` is now relative to the speech: the music is brought to the speech's
+  integrated loudness, then scaled. Two beds mastered at -12 and -24 LUFS used to
+  sit 15.6 and 25.8 LU under the speech; both now sit 21.2 LU under (default 0.08).
+  Episodes that tuned `bgm_volume` to a particular file will sound different.
+
 ## v0.8.0 - 2026-10-20 — configurable model providers
 
 Items J1–J10 in [Todos.md](./Todos.md); usage and design record in

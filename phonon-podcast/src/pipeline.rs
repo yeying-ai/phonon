@@ -279,6 +279,8 @@ fn render(
   // pads ~0.3 s, which would show subtitles early), then shifted by the
   // intro that precedes them.
   let (mut assembled, spans) = assemble_segments(segments, config)?;
+  // Measured before intro / outro so only speech sets the BGM level.
+  let speech_lufs = phonon_core::loudness_integrated(&assembled);
   let spans: Vec<(f64, f64)> = spans
     .into_iter()
     .zip(silences)
@@ -307,7 +309,7 @@ fn render(
 
   if let Some(bgm) = assets.bgm {
     let bgm = convert_to_target(bgm, target_rate, target_channels)?;
-    assembled = mix_bgm(assembled, bgm, config.bgm_volume)?;
+    assembled = mix_bgm(assembled, bgm, config.bgm_volume, speech_lufs)?;
   }
 
   phonon_core::normalize(&mut assembled, config.normalize_target);
@@ -496,6 +498,7 @@ fn mix_bgm(
   main: AudioBuffer,
   mut bgm: AudioBuffer,
   volume: f32,
+  speech_lufs: f32,
 ) -> Result<AudioBuffer, PodcastError> {
   if bgm.samples.is_empty() {
     return Err(PodcastError::Processing(
@@ -503,6 +506,13 @@ fn mix_bgm(
     ));
   }
 
+  // Bring the music to the speech's loudness first, so `volume` sets how
+  // far under the speech it sits (0.08 = 22 LU) whatever the file's own
+  // mastering. Too short or silent to measure: scale the file as-is.
+  let bgm_lufs = phonon_core::loudness_integrated(&bgm);
+  if speech_lufs.is_finite() && bgm_lufs.is_finite() {
+    phonon_core::adjust_volume_db(&mut bgm, speech_lufs - bgm_lufs);
+  }
   phonon_core::adjust_volume(&mut bgm, volume);
 
   if bgm.samples.len() < main.samples.len() {
@@ -568,6 +578,40 @@ mod tests {
     // Too short to measure: falls back to peak normalization.
     let peak = out[2].samples.iter().fold(0f32, |m, s| m.max(s.abs()));
     assert!((peak - 0.9).abs() < 1e-3, "short segment peak {peak}");
+  }
+
+  /// Two exports with music beds mastered 12 LU apart put the music 15.6 and
+  /// 25.8 LU under the speech: `bgm_volume` scaled the file as-is.
+  #[test]
+  fn test_bgm_level_follows_speech_not_the_file() {
+    let speech = AudioBuffer {
+      samples: sine(4.0, 0.3),
+      sample_rate: 16_000,
+      channels: 1,
+    };
+    let speech_lufs = phonon_core::loudness_integrated(&speech);
+    for bed_amp in [0.5, 0.02] {
+      let bed = AudioBuffer {
+        samples: sine(1.5, bed_amp).into_iter().map(|s| s * 0.7).collect(),
+        sample_rate: 16_000,
+        channels: 1,
+      };
+      let out = mix_bgm(speech.clone(), bed, 0.08, speech_lufs).expect("mix");
+      let music = AudioBuffer {
+        samples: out
+          .samples
+          .iter()
+          .zip(&speech.samples)
+          .map(|(o, s)| o - s)
+          .collect(),
+        ..speech.clone()
+      };
+      let under = speech_lufs - phonon_core::loudness_integrated(&music);
+      assert!(
+        (under - 21.94).abs() < 0.5,
+        "bed {bed_amp}: {under:.2} LU under"
+      );
+    }
   }
 
   /// Mock SoundGenProvider that records prompt count and returns a quiet
