@@ -6,6 +6,9 @@ use tracing::warn;
 
 /// Attempts per request in [`retry_transient`], including the first one.
 const MAX_ATTEMPTS: u32 = 5;
+/// Attempts when rate-limited (429): the waits add up to 63.5 s, past the
+/// per-minute windows vendors count requests in.
+const RATE_LIMIT_ATTEMPTS: u32 = 8;
 /// First backoff delay in [`retry_transient`]; doubles on each retry.
 const RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
 /// Upper bound for establishing a connection, separate from the overall
@@ -17,8 +20,9 @@ pub(crate) fn env_key(name: &str) -> Result<String, AiError> {
   std::env::var(name).map_err(|_| AiError::Config(format!("{name} environment variable not set")))
 }
 
-/// Run `op`, retrying with exponential backoff (5 attempts, waiting 0.5, 1,
-/// 2 and 4 s) while it fails with a [transient](AiError::is_transient) error.
+/// Run `op`, retrying with exponential backoff (waiting 0.5, 1, 2, 4 s, ...)
+/// while it fails with a [transient](AiError::is_transient) error: up to 5
+/// attempts, or 8 (63.5 s of waiting) while rate-limited.
 ///
 /// Only wrap requests that are safe to repeat: a retried TTS call costs
 /// another synthesis but has no other side effect.
@@ -38,7 +42,7 @@ where
   let mut attempt = 1;
   loop {
     match op().await {
-      Err(e) if e.is_transient() && attempt < MAX_ATTEMPTS => {
+      Err(e) if e.is_transient() && attempt < max_attempts(&e) => {
         let delay = base_delay * 2u32.pow(attempt - 1);
         warn!(attempt, ?delay, error = %e, "transient provider error, retrying");
         tokio::time::sleep(delay).await;
@@ -46,6 +50,13 @@ where
       }
       result => return result,
     }
+  }
+}
+
+fn max_attempts(error: &AiError) -> u32 {
+  match error {
+    AiError::Api { status: 429, .. } => RATE_LIMIT_ATTEMPTS,
+    _ => MAX_ATTEMPTS,
   }
 }
 
@@ -226,12 +237,24 @@ mod tests {
   }
 
   /// DashScope answered the first requests of a 4-way burst with 429 twice
-  /// in a row in 2 of 4 episode exports; 3 attempts left one 429 of margin.
+  /// in a row in 2 of 4 episode exports. MiniMax allows about 27 requests,
+  /// then one every 2-5 s until the minute is up; 4 concurrent requests lost
+  /// 5 times in a row and a 30-segment export failed.
   #[tokio::test]
-  async fn test_retry_outlasts_a_rate_limit_burst() {
-    let (result, calls) = run_with_errors((0..4).map(|_| api(429)).collect()).await;
+  async fn test_retry_waits_out_a_rate_limit_minute() {
+    let (result, calls) =
+      run_with_errors((1..RATE_LIMIT_ATTEMPTS).map(|_| api(429)).collect()).await;
     assert_eq!(result.unwrap(), 7);
-    assert_eq!(calls, 5);
+    assert_eq!(calls, 8);
+    let waited: Duration = (1..RATE_LIMIT_ATTEMPTS)
+      .map(|n| RETRY_BASE_DELAY * 2u32.pow(n - 1))
+      .sum();
+    assert!(waited >= Duration::from_secs(60), "{waited:?}");
+
+    let (result, calls) =
+      run_with_errors((0..=RATE_LIMIT_ATTEMPTS).map(|_| api(429)).collect()).await;
+    assert!(matches!(result, Err(AiError::Api { status: 429, .. })));
+    assert_eq!(calls, RATE_LIMIT_ATTEMPTS);
   }
 
   #[tokio::test]
