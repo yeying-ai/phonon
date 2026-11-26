@@ -175,7 +175,11 @@ fn language_boost(language: Option<&str>) -> Option<&'static str> {
 fn business_error_status(code: i32) -> u16 {
   match code {
     1002 | 1039 => 429,
-    other => u16::try_from(other).unwrap_or(500),
+    other => match u16::try_from(other) {
+      Ok(status) if !(500..600).contains(&status) => status,
+      // Non-throttling business codes should not be mistaken for transient 5xx.
+      _ => 400,
+    },
   }
 }
 

@@ -147,7 +147,38 @@ pub(crate) async fn read_bounded_bytes(
 
 /// Read a provider credential from the environment variable `name`.
 pub(crate) fn env_key(name: &str) -> Result<String, AiError> {
-  std::env::var(name).map_err(|_| AiError::Config(format!("{name} environment variable not set")))
+  let raw = std::env::var(name)
+    .map_err(|_| AiError::Config(format!("{name} environment variable not set")))?;
+  let trimmed = raw.trim();
+  if trimmed.is_empty() {
+    return Err(AiError::Config(format!(
+      "{name} environment variable is empty"
+    )));
+  }
+  Ok(trimmed.to_string())
+}
+
+/// Deterministic-free small jitter (+0%..+25%) so concurrent retries do not
+/// synchronize into thundering-herd 429 bursts.
+fn jitter_delay(delay: Duration) -> Duration {
+  use std::sync::atomic::{AtomicU64, Ordering};
+  static COUNTER: AtomicU64 = AtomicU64::new(1);
+  let ms = delay.as_millis() as u64;
+  if ms < 10 {
+    return delay;
+  }
+  let nanos = std::time::SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|d| d.subsec_nanos() as u64)
+    .unwrap_or(0);
+  let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+  // SplitMix64 finalizer for low-overhead uniform spread.
+  let mut x = nanos.wrapping_add(seq.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+  x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+  x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+  x ^= x >> 31;
+  let extra_ms = x % ((ms / 4).max(1) + 1);
+  delay + Duration::from_millis(extra_ms)
 }
 
 /// Run `op`, retrying with exponential backoff (waiting 0.5, 1, 2, 4 s, ...)
@@ -173,7 +204,7 @@ where
   loop {
     match op().await {
       Err(e) if e.is_transient() && attempt < max_attempts(&e) => {
-        let delay = base_delay * 2u32.pow(attempt - 1);
+        let delay = jitter_delay(base_delay * 2u32.pow(attempt - 1));
         warn!(attempt, ?delay, error = %e, "transient provider error, retrying");
         tokio::time::sleep(delay).await;
         attempt += 1;
@@ -208,7 +239,7 @@ pub(crate) async fn ensure_success(resp: reqwest::Response) -> Result<reqwest::R
 
 /// A credential whose `Debug` output is redacted, so providers can keep
 /// deriving `Debug` without leaking keys into logs.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub(crate) struct ApiKey(String);
 
 impl ApiKey {

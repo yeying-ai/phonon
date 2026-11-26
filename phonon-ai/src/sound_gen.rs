@@ -419,7 +419,7 @@ impl ReplicateSoundGen {
             .error
             .unwrap_or_else(|| "Prediction failed".to_string());
           return Err(AiError::Api {
-            status: 500,
+            status: 422,
             message: msg,
           });
         }

@@ -213,7 +213,8 @@ const PRESETS: &[Preset] = &[
       model: "qwen-audio-3.0-asr-flash",
       segments: SegmentMode::Always,
       path: "",
-      max_secs: Some(290),
+      // 200 s @ 16 kHz mono 16-bit WAV = 6.4 MB (~8.5 MB base64 < DashScope 10 MB limit).
+      max_secs: Some(200),
     }),
     llm: Some(LlmPreset {
       base_url: DASHSCOPE_COMPAT,
@@ -385,7 +386,7 @@ struct Endpoint {
   provider: String,
   protocol: Protocol,
   base_url: String,
-  api_key: String,
+  api_key: crate::client::ApiKey,
 }
 
 impl Config {
@@ -520,6 +521,7 @@ impl Config {
         })?,
         None => String::new(),
       };
+      let api_key = crate::client::ApiKey::new(api_key);
       return Ok(Endpoint {
         provider: name.to_string(),
         protocol: custom.protocol,
@@ -547,7 +549,7 @@ impl Config {
       provider: name.to_string(),
       protocol,
       base_url: base_url.to_string(),
-      api_key,
+      api_key: crate::client::ApiKey::new(api_key),
     })
   }
 
@@ -580,18 +582,18 @@ impl Config {
       .or_else(|| defaults.map(|d| d.format.to_string()))
       .unwrap_or_else(|| "wav".to_string());
 
-    let client = || HttpClient::new(ep.api_key.clone(), ep.base_url.clone(), None);
+    let client = || HttpClient::new(ep.api_key.expose(), ep.base_url.clone(), None);
     let backend = match ep.protocol {
       Protocol::OpenAi => TtsBackend::OpenAi(OpenAiTts::with_client(client()?).with_format(format)),
       Protocol::MiniMax => TtsBackend::MiniMax(
-        MiniMaxTts::with_api_key(ep.api_key.clone())?
+        MiniMaxTts::with_api_key(ep.api_key.expose())?
           .with_base_url(ep.base_url.clone())?
           .with_model(model.clone())
           .with_format(format),
       ),
       Protocol::Qwen => TtsBackend::Qwen(
         QwenTts::with_client(HttpClient::new(
-          ep.api_key.clone(),
+          ep.api_key.expose(),
           ep.base_url.clone(),
           Some(crate::qwen::TTS_TIMEOUT_SECS),
         )?)
@@ -629,7 +631,7 @@ impl Config {
       &name,
       ep.protocol,
     )?;
-    let client = HttpClient::new(ep.api_key, ep.base_url, None)?;
+    let client = HttpClient::new(ep.api_key.expose(), ep.base_url, None)?;
     let backend = match ep.protocol {
       Protocol::OpenAi => {
         let segments = section
@@ -688,7 +690,7 @@ impl Config {
       (None, None) => serde_json::Map::new(),
     };
     Ok(ChatEndpoint {
-      client: HttpClient::new(ep.api_key, ep.base_url, Some(120))?,
+      client: HttpClient::new(ep.api_key.expose(), ep.base_url, Some(120))?,
       provider: ep.provider,
       model,
       extra,
@@ -782,7 +784,7 @@ impl AnyTts {
   /// Chunks with nothing to speak (punctuation only) are skipped.
   fn chunks(&self, text: &str) -> Vec<String> {
     match self.max_chars {
-      Some(max) if text.chars().count() > max => split_text(text, max)
+      Some(max) if max > 0 && text.chars().count() > max => split_text(text, max)
         .into_iter()
         .filter(|c| c.chars().any(char::is_alphanumeric))
         .collect(),
@@ -829,7 +831,11 @@ impl TtsProvider for AnyTts {
 
   async fn synthesize(&self, text: &str, voice: &VoiceConfig) -> Result<AudioBuffer, AiError> {
     let mut chunks = self.chunks(text).into_iter();
-    let first = chunks.next().unwrap_or_default();
+    let Some(first) = chunks.next() else {
+      return Err(AiError::Config(
+        "TTS input contains no speakable text".to_string(),
+      ));
+    };
     let mut audio = self.synthesize_one(&first, voice).await?;
     for chunk in chunks {
       let next = self.synthesize_one(&chunk, voice).await?;
@@ -853,6 +859,11 @@ impl TtsProvider for AnyTts {
     tx: tokio::sync::mpsc::Sender<Result<AudioBuffer, AiError>>,
   ) -> Result<(), AiError> {
     let chunks = self.chunks(text);
+    if chunks.is_empty() {
+      return Err(AiError::Config(
+        "TTS input contains no speakable text".to_string(),
+      ));
+    }
     if chunks.len() > 1 {
       for chunk in chunks {
         let audio = self.synthesize_one(&chunk, voice).await;
@@ -863,15 +874,17 @@ impl TtsProvider for AnyTts {
       }
       return Ok(());
     }
+    // Always pass the bounded single chunk (never raw oversized `text`).
+    let bounded = &chunks[0];
     match &self.backend {
       TtsBackend::OpenAi(p) => {
-        p.synthesize_streaming(text, &self.voice_for_request(voice), tx)
+        p.synthesize_streaming(bounded, &self.voice_for_request(voice), tx)
           .await
       }
-      TtsBackend::MiniMax(p) => p.synthesize_streaming(text, voice, tx).await,
-      TtsBackend::Qwen(p) => p.synthesize_streaming(text, voice, tx).await,
-      TtsBackend::Edge(p) => p.synthesize_streaming(text, voice, tx).await,
-      TtsBackend::ElevenLabs(p) => p.synthesize_streaming(text, voice, tx).await,
+      TtsBackend::MiniMax(p) => p.synthesize_streaming(bounded, voice, tx).await,
+      TtsBackend::Qwen(p) => p.synthesize_streaming(bounded, voice, tx).await,
+      TtsBackend::Edge(p) => p.synthesize_streaming(bounded, voice, tx).await,
+      TtsBackend::ElevenLabs(p) => p.synthesize_streaming(bounded, voice, tx).await,
     }
   }
 }
@@ -944,12 +957,22 @@ impl SttProvider for AnyStt {
     let Some(max_secs) = self.max_secs else {
       return self.transcribe_one(data, filename, options).await;
     };
+    if max_secs == 0 {
+      return Err(AiError::Config(
+        "STT max_secs must be greater than 0".to_string(),
+      ));
+    }
     let extension = Path::new(filename)
       .extension()
       .and_then(|e| e.to_str())
-      .unwrap_or("wav");
-    let audio = match phonon_io::decode_audio(&data, extension) {
-      Ok(audio) if audio.duration_secs() > f64::from(max_secs) => audio,
+      .map(str::to_ascii_lowercase)
+      .unwrap_or_else(|| "wav".to_string());
+    // Qwen DashScope caps base64 payloads at 10 MB (~7 MB raw audio), so large
+    // high-rate files must also be re-encoded down to 16 kHz mono WAV chunks.
+    let exceeds_qwen_bytes =
+      matches!(self.backend, SttBackend::Qwen(_)) && data.len() > 7 * 1024 * 1024;
+    let audio = match phonon_io::decode_audio(&data, &extension) {
+      Ok(audio) if audio.duration_secs() > f64::from(max_secs) || exceeds_qwen_bytes => audio,
       Ok(_) => return self.transcribe_one(data, filename, options).await,
       Err(e) => {
         tracing::warn!(error = %e, "cannot decode audio to check its length; sending unsplit");

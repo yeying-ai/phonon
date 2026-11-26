@@ -258,39 +258,39 @@ impl WhisperStt {
     form
   }
 
-  /// Send the form and parse the response.
-  async fn send_request(
+  /// Send the multipart audio request with transient-error retries and parse
+  /// the response. Rebuilds the form on each attempt because `multipart::Form`
+  /// is consumed by `send()`.
+  async fn send_bytes(
     &self,
-    form: reqwest::multipart::Form,
+    bytes: &[u8],
+    filename: &str,
+    opts: &TranscribeOptions,
   ) -> Result<TranscriptResult, AiError> {
     let url = format!("{}/{}", self.client.base_url(), self.path);
 
-    let response = self
-      .client
-      .inner()
-      .post(&url)
-      .header("Authorization", format!("Bearer {}", self.client.api_key()))
-      .multipart(form)
-      .send()
-      .await
-      .map_err(|e| AiError::Http(e.to_string()))?;
-
-    if !response.status().is_success() {
-      let status = response.status();
-      let body = response
+    let body = crate::client::retry_transient(|| async {
+      let part = reqwest::multipart::Part::bytes(bytes.to_vec())
+        .file_name(filename.to_string())
+        .mime_str("application/octet-stream")
+        .map_err(|e| AiError::Http(e.to_string()))?;
+      let form = self.build_form(part, opts);
+      let response = self
+        .client
+        .inner()
+        .post(&url)
+        .header("Authorization", format!("Bearer {}", self.client.api_key()))
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| AiError::Http(e.to_string()))?;
+      crate::client::ensure_success(response)
+        .await?
         .text()
         .await
-        .unwrap_or_else(|_| "Failed to read error body".to_string());
-      return Err(AiError::Api {
-        status: status.as_u16(),
-        message: body,
-      });
-    }
-
-    let body = response
-      .text()
-      .await
-      .map_err(|e| AiError::Http(e.to_string()))?;
+        .map_err(|e| AiError::Http(e.to_string()))
+    })
+    .await?;
 
     // Every mode's body fits the verbose shape: `segments` defaults to empty.
     let resp: WhisperVerboseResponse =
@@ -324,13 +324,7 @@ impl SttProvider for WhisperStt {
       .unwrap_or("audio.wav")
       .to_string();
 
-    let part = reqwest::multipart::Part::bytes(file_bytes)
-      .file_name(filename)
-      .mime_str("application/octet-stream")
-      .map_err(|e| AiError::Http(e.to_string()))?;
-
-    let form = self.build_form(part, &opts);
-    let result = self.send_request(form).await?;
+    let result = self.send_bytes(&file_bytes, &filename, &opts).await?;
 
     info!(
       text_len = result.text.len(),
@@ -351,13 +345,7 @@ impl SttProvider for WhisperStt {
     let opts = options.unwrap_or_default();
     info!(filename = %filename, "Transcribing audio bytes via Whisper");
 
-    let part = reqwest::multipart::Part::bytes(data)
-      .file_name(filename.to_string())
-      .mime_str("application/octet-stream")
-      .map_err(|e| AiError::Http(e.to_string()))?;
-
-    let form = self.build_form(part, &opts);
-    let result = self.send_request(form).await?;
+    let result = self.send_bytes(&data, filename, &opts).await?;
 
     info!(
       text_len = result.text.len(),
@@ -406,10 +394,15 @@ pub(crate) fn wav_chunks(
   audio: &AudioBuffer,
   max_secs: u32,
 ) -> Result<Vec<(f64, Vec<u8>)>, AiError> {
+  if max_secs == 0 {
+    return Err(AiError::Config(
+      "STT max_secs must be greater than 0".to_string(),
+    ));
+  }
   let to_ai = |e: phonon_core::PhononError| AiError::Decode(e.to_string());
   let mono = phonon_core::ensure_channels(audio, 1).map_err(to_ai)?;
   let mono = phonon_core::resample(&mono, CHUNK_SAMPLE_RATE).map_err(to_ai)?;
-  let max_len = max_secs as usize * CHUNK_SAMPLE_RATE as usize;
+  let max_len = (max_secs as usize).saturating_mul(CHUNK_SAMPLE_RATE as usize);
   chunk_ranges(&mono.samples, CHUNK_SAMPLE_RATE, max_len)
     .into_iter()
     .map(|(start, end)| {
