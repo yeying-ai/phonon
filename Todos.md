@@ -260,3 +260,13 @@
   - DONE: 用合成的 -12 / -24 LUFS 音乐床实跑：路径可用(MP3 解码、循环、混音、响度达标),但音乐比人声低 15.6 / 25.8 LU,随文件响度漂移。改为先把音乐调到人声积分响度再乘 bgm_volume,重导出两者都低 21.2 LU(默认 0.08 = 22 LU);旧实现跑新测试为红(c7e8a88)。未做：循环接缝交叉淡化(合成音乐接缝跳变 0.016,在正常步长内;重估条件：首次用真实音乐导出时，接缝前后各 1 s 的响度差 >6 LU 或能听出断句)
 - [ ] **L6** BGM 循环接缝是硬拼接，没有交叉淡化。合成音乐测不出问题(接缝跳变 0.016,在正常采样步长内);真实音乐首尾常有淡入淡出或断在乐句中间
   - 重估条件：用第一首真实音乐导出时，接缝前后各 1 s 的响度差 >6 LU,或能听出断句
+
+## v0.8.2 — 系统评估 P0 修复 ✅ 已完成
+
+- [x] **M1** CI 回归止血：修 `filters.rs:164` 在 Rust 1.100 下的 `clippy::needless_range_loop`，清理 13 条 Cargo manifest 新告警
+- [x] **M2** `simd_ops.rs` Soundness 修复：移除无保护 SSE3 `_mm_movehdup_ps` 改为基线 SSE `_mm_shuffle_ps`，补齐 `target_feature` 门控，`simd_add_clamp` 升级为 `assert_eq!`
+- [x] **M3** `phonon-core` DSP 稳定性与边界防护：biquad 超 Nyquist / 零采样率 / 非正 Q 自动单位直通（修复 `ParametricEqPlugin` 在 16 kHz 语音下发散爆炸）；修 `resample` / `trim` / `overlay` / `silence` / `generators` 的 0 采样率、NaN/Inf、舍入越界与溢出 panic，补齐回归单测
+- [x] **M4** `phonon-ai` SSRF 与下载上限：校验 `QwenTts` / `ReplicateSoundGen` 服务端返回 URL 为公网 HTTPS，Replicate 轮询锁定 `api.replicate.com` 同源，流式限制最大 100 MiB，日志隐藏预签名 query
+- [x] **M5** `phonon-video` 加固：`ffmpeg`/`ffprobe` 统一 `-nostdin`、`Stdio::null()`、`kill_on_drop(true)`、超时、`-protocol_whitelist file,pipe`、`--` 与输出路径协议/同文件校验，直接传 `&Path`，临时文件改 `into_temp_path()`，读写移入 `spawn_blocking`
+- [x] **M6** 解压炸弹与 OOM 防护：`phonon-io` 新增 `read_audio_limited`/`decode_audio_limited` 并复用 `SampleBuffer`；`phonon-mcp` 限制单行 4 MiB、限制 `audio_resample` 采样率范围、按注册表剩余配额解码并限 1024 句柄；`phonon-server` 提前拒绝 `AssetSource::Generated`、校验 `bgm_volume`/`normalize_target`、限制 `/api/lufs` 解码样本数并增加并发/超时中间件
+- [x] **M7** `CachingTts` 原子写盘与指纹隔离：改同目录临时文件 + `rename` 并移入 `spawn_blocking`；`TtsProvider` 新增 `cache_fingerprint()` + 长度前缀/显式 Option tag 哈希；补齐 MiniMax `format` 配置传递与并发缓存单测
