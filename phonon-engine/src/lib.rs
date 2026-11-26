@@ -58,6 +58,9 @@ struct SharedState {
   streaming: AtomicBool,
   /// Real-time effect chain applied during playback.
   effect_chain: Mutex<EffectChain>,
+  /// Lock-free mirror of `effect_chain.len()` so `effect_count()` never contends
+  /// with the audio callback.
+  effect_count: AtomicUsize,
   /// Sample rate for effect processing.
   sample_rate: u32,
   /// Channel count for effect processing.
@@ -78,6 +81,7 @@ impl SharedState {
       volume_bits: AtomicU32::new(f32::to_bits(1.0)),
       streaming: AtomicBool::new(false),
       effect_chain: Mutex::new(EffectChain::new()),
+      effect_count: AtomicUsize::new(0),
       sample_rate,
       channels,
     }
@@ -88,9 +92,11 @@ impl SharedState {
   }
 
   fn set_volume(&self, vol: f32) {
-    self
-      .volume_bits
-      .store(vol.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
+    if vol.is_finite() {
+      self
+        .volume_bits
+        .store(vol.clamp(0.0, 2.0).to_bits(), Ordering::Relaxed);
+    }
   }
 }
 
@@ -133,10 +139,32 @@ impl AudioPlayer {
         err_fn,
         None,
       ),
-      _ => {
-        return Err(EngineError::Config(
-          "Unsupported sample format (only F32 supported for now)".to_string(),
-        ));
+      cpal::SampleFormat::I16 => {
+        let mut scratch = Vec::with_capacity(4096);
+        device.build_output_stream(
+          &config.into(),
+          move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
+            write_data_converted(data, &state_clone, &mut scratch)
+          },
+          err_fn,
+          None,
+        )
+      }
+      cpal::SampleFormat::U16 => {
+        let mut scratch = Vec::with_capacity(4096);
+        device.build_output_stream(
+          &config.into(),
+          move |data: &mut [u16], _: &cpal::OutputCallbackInfo| {
+            write_data_converted(data, &state_clone, &mut scratch)
+          },
+          err_fn,
+          None,
+        )
+      }
+      other => {
+        return Err(EngineError::Config(format!(
+          "Unsupported sample format: {other:?}"
+        )));
       }
     }
     .map_err(|e| EngineError::Device(e.to_string()))?;
@@ -174,6 +202,10 @@ impl AudioPlayer {
 
     info!("Loading audio for playback");
 
+    // Quiesce playback before swapping so an in-flight callback cannot read
+    // the previous high `position` against a shorter new track and auto-stop.
+    self.state.active.store(false, Ordering::SeqCst);
+    self.state.streaming.store(false, Ordering::SeqCst);
     // Copy outside the lock; swap inside; free the old track after unlocking.
     let _old_samples = self.state.replace_samples(buffer.samples.clone())?;
     self.state.position.store(0, Ordering::SeqCst);
@@ -285,10 +317,11 @@ impl AudioPlayer {
       return Ok(());
     }
 
+    // Mark streaming *before* appending so an active callback reaching the end
+    // mid-stream does not auto-stop before the flag is visible.
+    self.state.streaming.store(true, Ordering::SeqCst);
     self.state.append(new_samples)?;
 
-    // Enable streaming mode and auto-activate
-    self.state.streaming.store(true, Ordering::SeqCst);
     if !self.state.active.load(Ordering::Relaxed) {
       self.state.paused.store(false, Ordering::SeqCst);
       self.state.active.store(true, Ordering::SeqCst);
@@ -307,31 +340,39 @@ impl AudioPlayer {
 
   /// Clears the loaded audio buffer.
   pub fn clear(&self) {
+    self.state.streaming.store(false, Ordering::SeqCst);
     self.stop();
     // The old track is freed after the lock is released.
     let _old_samples = self.state.replace_samples(Vec::new());
   }
 
   /// Adds a [`phonon_core::DspPlugin`] to the playback effect chain.
-  pub fn add_plugin(&self, plugin: Box<dyn phonon_core::DspPlugin>) {
+  ///
+  /// Pre-allocates plugin filter/delay state off the audio thread before
+  /// pushing so the first real-time callback does not allocate.
+  pub fn add_plugin(&self, mut plugin: Box<dyn phonon_core::DspPlugin>) {
+    plugin.prepare(self.device_sample_rate, self.device_channels);
     if let Ok(mut chain) = self.state.effect_chain.lock() {
       chain.push(plugin);
+      self
+        .state
+        .effect_count
+        .store(chain.len(), Ordering::Relaxed);
     }
   }
 
   /// Removes all effects from the playback chain.
   pub fn clear_effects(&self) {
     // Drop the effects after the lock is released.
-    let _old_chain = self
-      .state
-      .effect_chain
-      .lock()
-      .map(|mut chain| std::mem::take(&mut *chain));
+    let _old_chain = self.state.effect_chain.lock().map(|mut chain| {
+      self.state.effect_count.store(0, Ordering::Relaxed);
+      std::mem::take(&mut *chain)
+    });
   }
 
-  /// Returns the number of active effects.
+  /// Returns the number of active effects without locking the effect chain.
   pub fn effect_count(&self) -> usize {
-    self.state.effect_chain.lock().map(|c| c.len()).unwrap_or(0)
+    self.state.effect_count.load(Ordering::Relaxed)
   }
 
   pub fn device_sample_rate(&self) -> u32 {
@@ -443,9 +484,10 @@ fn write_data(output: &mut [f32], state: &SharedState) {
   drop(samples);
 
   // Only advance if no seek/stop/play changed the position meanwhile.
-  let _ = state
+  let advanced = state
     .position
-    .compare_exchange(start_pos, pos, Ordering::AcqRel, Ordering::Relaxed);
+    .compare_exchange(start_pos, pos, Ordering::AcqRel, Ordering::Relaxed)
+    .is_ok();
 
   // Apply real-time effects; skip this block if the chain is being edited.
   if let Ok(mut chain) = state.effect_chain.try_lock()
@@ -454,9 +496,23 @@ fn write_data(output: &mut [f32], state: &SharedState) {
     chain.process(output, state.sample_rate, state.channels);
   }
 
-  // Auto-stop when finished (unless streaming — more data may arrive)
-  if pos >= total && !state.streaming.load(Ordering::Relaxed) {
+  // Auto-stop only when this callback genuinely advanced to the end (not when a
+  // concurrent seek/play superseded `position`), and not in streaming mode.
+  if advanced && pos >= total && !state.streaming.load(Ordering::Acquire) {
     state.active.store(false, Ordering::Relaxed);
+  }
+}
+
+/// Renders into a reusable `f32` scratch buffer and converts to `T` (`i16`/`u16`)
+/// for output devices whose native sample format is not `f32`.
+fn write_data_converted<T>(output: &mut [T], state: &SharedState, scratch: &mut Vec<f32>)
+where
+  T: cpal::Sample + cpal::FromSample<f32>,
+{
+  scratch.resize(output.len(), 0.0);
+  write_data(scratch, state);
+  for (dst, &src) in output.iter_mut().zip(scratch.iter()) {
+    *dst = T::from_sample(src.clamp(-1.0, 1.0));
   }
 }
 
@@ -564,5 +620,24 @@ mod tests {
     assert_eq!(seek_index(1.5 / 48_000.0, 48_000, 2, 1_000), 2);
     // Clamped to the end, still aligned.
     assert_eq!(seek_index(10.0, 48_000, 2, 1_001), 1_000);
+  }
+
+  #[test]
+  fn test_set_volume_ignores_non_finite() {
+    let state = SharedState::new(48_000, 2);
+    state.set_volume(0.75);
+    state.set_volume(f32::NAN);
+    state.set_volume(f32::INFINITY);
+    assert!((state.volume() - 0.75).abs() < 1e-6);
+  }
+
+  #[test]
+  fn test_write_data_converted_scales_i16() {
+    let state = loaded_state(vec![0.5, -0.5, 1.0, -1.0]);
+    let mut out = [0i16; 4];
+    let mut scratch = Vec::with_capacity(16);
+    write_data_converted(&mut out, &state, &mut scratch);
+    assert!(out[0] > 15_000 && out[1] < -15_000);
+    assert!(!state.active.load(Ordering::Relaxed));
   }
 }

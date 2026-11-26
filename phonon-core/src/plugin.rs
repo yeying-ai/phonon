@@ -26,20 +26,28 @@ pub struct PluginParam {
 
 impl PluginParam {
   /// Create a new parameter with the given bounds and default.
-  /// `current` is initialised to `default`.
+  /// `current` is initialised to `default` (clamped to `[min, max]`).
   pub fn new(name: impl Into<String>, min: f32, max: f32, default: f32) -> Self {
+    let clamped = if default.is_finite() {
+      default.clamp(min, max)
+    } else {
+      min
+    };
     Self {
       name: name.into(),
       min,
       max,
-      default,
-      current: default,
+      default: clamped,
+      current: clamped,
     }
   }
 
-  /// Clamp `value` to `[min, max]` and set `current`.
+  /// Clamp `value` to `[min, max]` and set `current`. Non-finite values
+  /// (`NaN` / `±Inf`) are ignored so they cannot poison downstream DSP.
   pub fn set(&mut self, value: f32) {
-    self.current = value.clamp(self.min, self.max);
+    if value.is_finite() {
+      self.current = value.clamp(self.min, self.max);
+    }
   }
 
   /// Reset `current` to `default`.
@@ -69,6 +77,10 @@ pub trait DspPlugin: Send + Sync {
 
   /// Get the current value of a parameter, or `None` if unknown.
   fn get_parameter(&self, name: &str) -> Option<f32>;
+
+  /// Pre-allocate internal filter/delay state for the given stream format
+  /// off the real-time audio thread so [`Self::process`] does not allocate.
+  fn prepare(&mut self, _sample_rate: u32, _channels: u16) {}
 
   /// Process audio samples in-place.
   fn process(&mut self, samples: &mut [f32], sample_rate: u32, channels: u16);
@@ -255,18 +267,27 @@ impl DspPlugin for LowPassPlugin {
   fn get_parameter(&self, name: &str) -> Option<f32> {
     find_param(&self.params, name)
   }
+  fn prepare(&mut self, _sample_rate: u32, channels: u16) {
+    let ch = channels as usize;
+    if self.prev.len() != ch {
+      self.prev = vec![0.0; ch];
+    }
+  }
   fn process(&mut self, samples: &mut [f32], sample_rate: u32, channels: u16) {
+    let ch = channels as usize;
+    if sample_rate == 0 || ch == 0 {
+      return;
+    }
     let cutoff = self.params[0].current as f64;
     let rc = 1.0 / (2.0 * std::f64::consts::PI * cutoff);
     let dt = 1.0 / sample_rate as f64;
     let alpha = dt / (rc + dt);
-    let ch = channels as usize;
 
     if self.prev.len() != ch {
       self.prev = vec![0.0; ch];
     }
 
-    for frame in samples.chunks_mut(ch.max(1)) {
+    for frame in samples.chunks_mut(ch) {
       for (sample, prev) in frame.iter_mut().zip(&mut self.prev) {
         *prev += alpha * (*sample as f64 - *prev);
         *sample = *prev as f32;
@@ -321,18 +342,27 @@ impl DspPlugin for HighPassPlugin {
   fn get_parameter(&self, name: &str) -> Option<f32> {
     find_param(&self.params, name)
   }
+  fn prepare(&mut self, _sample_rate: u32, channels: u16) {
+    let ch = channels as usize;
+    if self.prev.len() != ch {
+      self.prev = vec![(0.0, 0.0); ch];
+    }
+  }
   fn process(&mut self, samples: &mut [f32], sample_rate: u32, channels: u16) {
+    let ch = channels as usize;
+    if sample_rate == 0 || ch == 0 {
+      return;
+    }
     let cutoff = self.params[0].current as f64;
     let rc = 1.0 / (2.0 * std::f64::consts::PI * cutoff);
     let dt = 1.0 / sample_rate as f64;
     let alpha = rc / (rc + dt);
-    let ch = channels as usize;
 
     if self.prev.len() != ch {
       self.prev = vec![(0.0, 0.0); ch];
     }
 
-    for frame in samples.chunks_mut(ch.max(1)) {
+    for frame in samples.chunks_mut(ch) {
       for (sample, (prev_input, prev_output)) in frame.iter_mut().zip(&mut self.prev) {
         let input = *sample as f64;
         *prev_output = alpha * (*prev_output + input - *prev_input);
@@ -499,6 +529,14 @@ impl DspPlugin for ParametricEqPlugin {
   }
   fn get_parameter(&self, name: &str) -> Option<f32> {
     find_param(&self.params, name)
+  }
+  fn prepare(&mut self, sample_rate: u32, channels: u16) {
+    if sample_rate == 0 || channels == 0 {
+      return;
+    }
+    if self.eq.is_none() || sample_rate != self.last_sample_rate || channels != self.last_channels {
+      self.rebuild(sample_rate, channels);
+    }
   }
   fn process(&mut self, samples: &mut [f32], sample_rate: u32, channels: u16) {
     match &mut self.eq {
