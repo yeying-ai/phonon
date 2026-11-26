@@ -2,17 +2,79 @@
 
 use crate::state::{AppState, transform_audio};
 use dioxus::prelude::*;
-use phonon_core::{AudioBuffer, algorithms};
+use phonon_core::{
+  AudioBuffer, VoiceEnhanceConfig, algorithms, detect_speech_regions, enhance_voice, splice_ranges,
+};
 
 #[component]
 pub fn EffectsPanel() -> Element {
   let mut state = use_context::<AppState>();
+  let mut enhance_preset = use_signal(|| "podcast_studio".to_string());
   let eff = (state.effects)();
 
   rsx! {
     div {
       class: "flex flex-col gap-3",
-      h3 { class: "text-xs font-semibold text-[#ECEFF4]", "Offline DSP & Loudness" }
+      h3 { class: "text-xs font-semibold text-[#ECEFF4]", "Offline DSP & Voice Enhance" }
+
+      // Phase 2: One-Click Local Broadcast Voice Enhancement & Auto Silence Strip
+      div {
+        class: "bg-[#141619] border border-[#E8A238]/40 rounded p-2.5 flex flex-col gap-2",
+        span { class: "text-[11px] font-semibold text-[#E8A238]", "Local Broadcast Voice Enhance" }
+        select {
+          class: "w-full bg-[#252A31] border border-[#2D333C] text-[#ECEFF4] rounded px-2 py-1 text-xs",
+          value: "{enhance_preset}",
+          onchange: move |evt| enhance_preset.set(evt.value()),
+          option { value: "podcast_studio", "Podcast Studio (Balanced Denoise + EQ)" }
+          option { value: "noisy_room", "Noisy Room (Strong STFT Denoise)" }
+          option { value: "clean_mic", "Clean Mic (Gentle Polish + Presence)" }
+        }
+        div {
+          class: "grid grid-cols-2 gap-1.5",
+          button {
+            class: "px-2 py-1.5 rounded text-xs font-semibold bg-[#E8A238] text-[#141619] hover:opacity-90 transition",
+            onclick: move |_| {
+              let preset_name = enhance_preset.read().clone();
+              async move {
+                let cfg = match preset_name.as_str() {
+                  "noisy_room" => VoiceEnhanceConfig::noisy_room(),
+                  "clean_mic" => VoiceEnhanceConfig::clean_mic(),
+                  _ => VoiceEnhanceConfig::podcast_studio(),
+                };
+                transform_audio(
+                  &mut state,
+                  move |buf| {
+                    if let Ok(enhanced) = enhance_voice(buf, &cfg) {
+                      *buf = enhanced;
+                    }
+                  },
+                  format!("Applied local Broadcast Voice Enhance ({preset_name})"),
+                ).await;
+              }
+            },
+            "Enhance Voice"
+          }
+          button {
+            class: "px-2 py-1.5 rounded text-xs font-medium bg-[#252A31] border border-[#2D333C] text-[#ECEFF4] hover:border-[#38B2AC] transition",
+            title: "Detect and remove silent pauses longer than 0.45s with smooth 15ms cosine crossfades",
+            onclick: move |_| async move {
+              transform_audio(
+                &mut state,
+                |buf| {
+                  if let Ok(regions) = detect_speech_regions(buf, -38.0, 0.45, 0.06)
+                    && !regions.is_empty()
+                    && let Ok(spliced) = splice_ranges(buf, &regions, 0.015)
+                  {
+                    *buf = spliced;
+                  }
+                },
+                "Stripped long silences (15ms cosine crossfade)".to_string(),
+              ).await;
+            },
+            "Strip Silence"
+          }
+        }
+      }
 
       // Quick Broadcast LUFS Normalize
       div {

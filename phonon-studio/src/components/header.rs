@@ -2,6 +2,7 @@
 
 use crate::project::StudioProject;
 use crate::state::{AppState, SidePanel, WorkspaceTab, load_audio};
+use crate::studio_ops::write_project_atomic_file;
 use dioxus::prelude::*;
 use std::collections::HashMap;
 
@@ -12,6 +13,8 @@ pub fn Header() -> Element {
   let can_undo = state.history.read().can_undo();
   let can_redo = state.history.read().can_redo();
   let show_ai_draft = (state.show_ai_draft)();
+  let show_mcp_panel = (state.show_mcp_panel)();
+  let mcp_synced = state.project_path.read().is_some() && (state.mcp_live_sync)();
 
   // Resolve active TTS provider badge without holding signal borrows across RSX.
   let (provider_label, provider_ready) = {
@@ -99,6 +102,24 @@ pub fn Header() -> Element {
             },
             onclick: move |_| state.show_ai_draft.set(!show_ai_draft),
             "AI Draft"
+          }
+
+          button {
+            class: if show_mcp_panel {
+              "px-2.5 py-1.5 rounded text-xs font-medium bg-[#38B2AC] text-[#141619] flex items-center gap-1.5 transition"
+            } else {
+              "px-2.5 py-1.5 rounded text-xs font-medium bg-[#252A31] text-[#ECEFF4] border border-[#2D333C] hover:border-[#38B2AC] flex items-center gap-1.5 transition"
+            },
+            title: "Configure MCP Agent live co-editing",
+            onclick: move |_| state.show_mcp_panel.set(!show_mcp_panel),
+            span {
+              class: if mcp_synced {
+                "inline-block w-1.5 h-1.5 rounded-full bg-[#38B2AC]"
+              } else {
+                "inline-block w-1.5 h-1.5 rounded-full bg-[#647080]"
+              }
+            }
+            "MCP Sync"
           }
 
           div { class: "h-4 w-px bg-[#2D333C] mx-0.5" }
@@ -222,18 +243,22 @@ async fn open_podcast_project(state: &mut AppState) {
   let path_for_read = path.clone();
 
   let loaded = tokio::task::spawn_blocking(move || {
+    let mtime = std::fs::metadata(&path_for_read)
+      .and_then(|m| m.modified())
+      .ok();
     let raw = std::fs::read_to_string(&path_for_read)
       .map_err(|e| format!("Failed to read '{}': {e}", path_for_read.display()))?;
-    StudioProject::from_json(&raw)
+    StudioProject::from_json(&raw).map(|proj| (proj, mtime))
   })
   .await;
 
   match loaded {
-    Ok(Ok(proj)) => {
+    Ok(Ok((proj, mtime))) => {
       let seg_count = proj.script.segments.len();
       state.project.set(proj);
       state.history.write().clear();
       state.project_path.set(Some(path.clone()));
+      state.last_synced_mtime.set(mtime);
       state.segment_audio.set(HashMap::new());
       state.rendered_episode.set(None);
       state.episode_view.set(None);
@@ -250,7 +275,7 @@ async fn open_podcast_project(state: &mut AppState) {
   }
 }
 
-async fn save_podcast_project(state: &mut AppState) {
+pub async fn save_podcast_project(state: &mut AppState) {
   let json = match state.project.read().to_json_pretty() {
     Ok(j) => j,
     Err(e) => {
@@ -277,13 +302,16 @@ async fn save_podcast_project(state: &mut AppState) {
   let path = handle.path().to_path_buf();
   let write_path = path.clone();
 
-  let res = tokio::task::spawn_blocking(move || std::fs::write(&write_path, json)).await;
+  let res =
+    tokio::task::spawn_blocking(move || write_project_atomic_file(&write_path, &json)).await;
   match res {
-    Ok(Ok(())) => {
+    Ok(Ok(mtime)) => {
       state.project_path.set(Some(path.clone()));
-      state
-        .status_msg
-        .set(format!("Saved project to {}", path.display()));
+      state.last_synced_mtime.set(Some(mtime));
+      state.status_msg.set(format!(
+        "Saved project to {} (MCP Live Sync ready)",
+        path.display()
+      ));
     }
     Ok(Err(e)) => state.status_msg.set(format!("Save failed: {e}")),
     Err(e) => state.status_msg.set(format!("Save task error: {e}")),

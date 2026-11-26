@@ -241,7 +241,11 @@ pub(crate) fn resolve_for_read(root: &Path, path: &str) -> Result<PathBuf, McpEr
 /// Resolves a path to write: its parent directory must exist inside `root`,
 /// and an existing target (file or symlink) is only replaced with
 /// `overwrite`, and only if it also resolves inside `root`.
-pub(crate) fn resolve_for_write(root: &Path, path: &str, overwrite: bool) -> Result<PathBuf, McpError> {
+pub(crate) fn resolve_for_write(
+  root: &Path,
+  path: &str,
+  overwrite: bool,
+) -> Result<PathBuf, McpError> {
   let root = canonical_root(root)?;
   let joined = root.join(path);
   let name = joined

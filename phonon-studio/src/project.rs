@@ -186,8 +186,14 @@ impl SegmentMediaOverride {
     let mut out = String::new();
     for part in kept {
       let needs_space = !out.is_empty()
-        && out.chars().last().is_some_and(|c| c.is_ascii_alphanumeric())
-        && part.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
+        && out
+          .chars()
+          .last()
+          .is_some_and(|c| c.is_ascii_alphanumeric())
+        && part
+          .chars()
+          .next()
+          .is_some_and(|c| c.is_ascii_alphanumeric());
       if needs_space {
         out.push(' ');
       }
@@ -236,7 +242,8 @@ pub fn is_filler_token(token: &str) -> bool {
     .to_ascii_lowercase();
   matches!(
     cleaned.as_str(),
-    "嗯" | "嗯嗯"
+    "嗯"
+      | "嗯嗯"
       | "啊"
       | "呃"
       | "额"
@@ -321,9 +328,9 @@ pub fn spans_from_speech_regions(regions: &[(f64, f64)]) -> Vec<TranscriptCutSpa
 /// - Whitespace-delimited words for Latin text
 /// - Clause/punctuation chunks + isolated Chinese filler particles (`嗯`, `啊`, `呃`, `额`, `那个`) for CJK text
 fn tokenize_for_cut_spans(text: &str) -> Vec<String> {
-  let has_cjk = text
-    .chars()
-    .any(|c| matches!(c, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}'));
+  let has_cjk = text.chars().any(
+    |c| matches!(c, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}'),
+  );
   if !has_cjk {
     return text.split_whitespace().map(ToString::to_string).collect();
   }

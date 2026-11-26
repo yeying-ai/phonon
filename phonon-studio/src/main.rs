@@ -69,17 +69,21 @@ async fn handle_drop(state: &mut AppState, evt: Event<DragData>) {
   if path_lower.ends_with(".json") {
     let read_path = path_buf.clone();
     let loaded = tokio::task::spawn_blocking(move || {
+      let mtime = std::fs::metadata(&read_path)
+        .and_then(|m| m.modified())
+        .ok();
       let raw = std::fs::read_to_string(&read_path)
         .map_err(|e| format!("Failed to read '{}': {e}", read_path.display()))?;
-      StudioProject::from_json(&raw)
+      StudioProject::from_json(&raw).map(|proj| (proj, mtime))
     })
     .await;
     match loaded {
-      Ok(Ok(proj)) => {
+      Ok(Ok((proj, mtime))) => {
         let count = proj.script.segments.len();
         state.project.set(proj);
         state.history.write().clear();
         state.project_path.set(Some(path_buf));
+        state.last_synced_mtime.set(mtime);
         state.segment_audio.set(HashMap::new());
         state.rendered_episode.set(None);
         state.episode_view.set(None);

@@ -160,9 +160,7 @@ pub fn denoise_spectral(buffer: &AudioBuffer, strength: f32) -> Result<AudioBuff
     // the quietest 15% of frames (minimum-statistics frame selection avoids
     // Rayleigh single-bin tail bias).
     frame_energies.sort_by(|a, b| a.1.total_cmp(&b.1));
-    let noise_frame_count = ((num_stft_frames * 15) / 100)
-      .max(1)
-      .min(num_stft_frames);
+    let noise_frame_count = ((num_stft_frames * 15) / 100).max(1).min(num_stft_frames);
     let mut noise_psd = vec![0.0f32; bins];
     for &(frame_idx, _) in &frame_energies[..noise_frame_count] {
       let spec = &spectra[frame_idx];
@@ -252,7 +250,13 @@ pub fn enhance_voice(buffer: &AudioBuffer, config: &VoiceEnhanceConfig) -> Resul
 
   // Stage 1: Rumble / plosive High-Pass filter.
   if config.highpass_hz > 0.0 && config.highpass_hz < (out.sample_rate as f64 * 0.45) {
-    filter(&mut out, FilterType::HighPass, config.highpass_hz, 0.707, 0.0)?;
+    filter(
+      &mut out,
+      FilterType::HighPass,
+      config.highpass_hz,
+      0.707,
+      0.0,
+    )?;
   }
 
   // Stage 2: Adaptive STFT spectral noise suppression.

@@ -124,8 +124,7 @@ pub fn render_recorded_segment(ov: &SegmentMediaOverride) -> Result<AudioBuffer,
   if kept.is_empty() {
     return Err("All transcript spans in this recorded segment are deleted".to_string());
   }
-  let covers_full =
-    kept.len() == 1 && kept[0].0 <= 0.005 && (dur - kept[0].1).abs() <= 0.005;
+  let covers_full = kept.len() == 1 && kept[0].0 <= 0.005 && (dur - kept[0].1).abs() <= 0.005;
   if !covers_full {
     buf = splice_ranges(&buf, &kept, 0.015)
       .map_err(|e| format!("Failed to splice recorded segment: {e}"))?;
@@ -134,8 +133,7 @@ pub fn render_recorded_segment(ov: &SegmentMediaOverride) -> Result<AudioBuffer,
     // Keep LUFS leveling to the episode pipeline so BGM & multi-speaker leveling stay consistent.
     let mut cfg = VoiceEnhanceConfig::podcast_studio();
     cfg.target_lufs = None;
-    buf = enhance_voice(&buf, &cfg)
-      .map_err(|e| format!("Local voice enhancement failed: {e}"))?;
+    buf = enhance_voice(&buf, &cfg).map_err(|e| format!("Local voice enhancement failed: {e}"))?;
   }
   Ok(buf)
 }

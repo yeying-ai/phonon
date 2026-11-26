@@ -74,9 +74,7 @@ pub fn splice_ranges(
     }
 
     // Clamp crossfade to at most half of each adjacent clip so neither clip is consumed.
-    let fade_frames = req_fade_frames
-      .min(out_frames / 2)
-      .min(seg_frames / 2);
+    let fade_frames = req_fade_frames.min(out_frames / 2).min(seg_frames / 2);
 
     if fade_frames > 0 {
       let overlap_start = (out_frames - fade_frames) * ch;

@@ -1,15 +1,19 @@
 #![allow(non_snake_case)]
 
-use crate::project::{LoudnessHealth, format_db, format_timecode};
+use crate::components::header::save_podcast_project;
+use crate::project::{
+  LoudnessHealth, SegmentMediaOverride, format_db, format_timecode, mcp_client_config_json,
+};
 use crate::state::{AppState, InspectorTab, play_buffer};
 use crate::studio_ops::{
-  EpisodeExportFormat, assemble_episode, draft_script_from_topic, export_episode_file,
-  preset_voices_for, synthesize_segment,
+  EpisodeExportFormat, align_recorded_segment, assemble_episode, check_external_project_reload,
+  draft_script_from_topic, export_episode_file, preset_voices_for, synthesize_segment,
 };
 use dioxus::prelude::*;
 use phonon_ai::VoiceConfig;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Duration;
 
 /// Palette dots assigned to speakers deterministically by sorted order.
 const SPEAKER_DOTS: &[&str] = &[
@@ -23,6 +27,43 @@ const SPEAKER_DOTS: &[&str] = &[
 
 #[component]
 pub fn PodcastStudioView() -> Element {
+  let mut state = use_context::<AppState>();
+
+  // Phase 2 MCP Live Sync watcher: hot-reloads atomic edits made by external
+  // agents via `phonon-mcp` and snapshots the previous state onto Undo history.
+  use_future(move || async move {
+    loop {
+      tokio::time::sleep(Duration::from_millis(500)).await;
+      if !(state.mcp_live_sync)() {
+        continue;
+      }
+      let path_opt = state.project_path.read().clone();
+      let Some(path) = path_opt else {
+        continue;
+      };
+      let last_mtime = (state.last_synced_mtime)();
+      let checked =
+        tokio::task::spawn_blocking(move || check_external_project_reload(&path, last_mtime)).await;
+      if let Ok(Some((new_mtime, parse_res))) = checked {
+        state.last_synced_mtime.set(Some(new_mtime));
+        match parse_res {
+          Ok(updated_proj) => {
+            let segs = updated_proj.script.segments.len();
+            state.mutate_project(|p| *p = updated_proj);
+            state.status_msg.set(format!(
+              "Synced external MCP edit ({segs} segments — click Undo to revert)"
+            ));
+          }
+          Err(e) => {
+            state
+              .status_msg
+              .set(format!("MCP sync reload skipped (invalid JSON): {e}"));
+          }
+        }
+      }
+    }
+  });
+
   rsx! {
     div {
       class: "flex-1 flex min-h-0 overflow-hidden bg-[#141619]",
@@ -560,9 +601,13 @@ fn CenterScriptDesk() -> Element {
   let speakers = project.sorted_speakers();
   let seg_audio_map = state.segment_audio.read().clone();
   let busy_set = state.synthesizing_segments.read().clone();
+  let aligning_set = state.aligning_segments.read().clone();
   let is_assembling = (state.is_assembling)();
   let is_drafting = (state.is_drafting)();
   let show_ai_draft = (state.show_ai_draft)();
+  let show_mcp_panel = (state.show_mcp_panel)();
+  let mcp_live_sync = (state.mcp_live_sync)();
+  let project_path = state.project_path.read().clone();
 
   let total_segments = project.script.segments.len();
   let fresh_count = (0..total_segments)
@@ -693,6 +738,60 @@ fn CenterScriptDesk() -> Element {
         }
       }
 
+      // Optional collapsible MCP Live Sync Bridge drawer
+      if show_mcp_panel {
+        {
+          let snippet = mcp_client_config_json(project_path.as_deref());
+          let path_label = project_path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| "Not bound yet — save project to enable live co-editing".to_string());
+          rsx! {
+            div {
+              class: "px-5 py-3 bg-[#1C1F24] border-b border-[#38B2AC]/40 flex flex-col gap-2.5",
+              div {
+                class: "flex flex-wrap items-center justify-between gap-2",
+                div {
+                  class: "flex flex-col gap-0.5",
+                  span { class: "text-xs font-semibold text-[#ECEFF4]", "Local MCP Agent Bridge (phonon-mcp)" }
+                  span { class: "text-[11px] font-mono text-[#9AA4B2] truncate max-w-xl", "{path_label}" }
+                }
+                div {
+                  class: "flex items-center gap-3",
+                  label {
+                    class: "flex items-center gap-1.5 text-xs text-[#9AA4B2] cursor-pointer",
+                    input {
+                      r#type: "checkbox",
+                      class: "accent-[#38B2AC]",
+                      checked: mcp_live_sync,
+                      onchange: move |evt| state.mcp_live_sync.set(evt.checked()),
+                    }
+                    "Auto-reload MCP edits (500ms)"
+                  }
+                  if project_path.is_none() {
+                    button {
+                      class: "px-2.5 py-1 rounded text-xs font-semibold bg-[#38B2AC] text-[#141619] hover:opacity-90",
+                      onclick: move |_| async move {
+                        save_podcast_project(&mut state).await;
+                      },
+                      "Save & Bind File"
+                    }
+                  }
+                }
+              }
+              pre {
+                class: "bg-[#141619] border border-[#2D333C] rounded p-2 text-[11px] font-mono text-[#9AA4B2] overflow-x-auto select-all",
+                "{snippet}"
+              }
+              div {
+                class: "text-[11px] text-[#647080]",
+                "Exposed tools: studio_get_project, studio_edit_segment, studio_add_segment, studio_delete_segment, studio_set_mastering, audio_enhance_voice, audio_splice. External edits push onto Undo history."
+              }
+            }
+          }
+        }
+      }
+
       // Segment timeline list
       div {
         class: "flex-1 overflow-y-auto px-5 py-4 flex flex-col gap-3",
@@ -726,6 +825,21 @@ fn CenterScriptDesk() -> Element {
             let text_val = seg.text.clone();
             let num_label = format!("{:02}", idx + 1);
             let can_remove = total_segments > 1;
+            let override_opt = project.segment_overrides.get(&idx).cloned();
+            let recorded_path = override_opt
+              .as_ref()
+              .and_then(|o| o.recorded_path.clone());
+            let enhance_on = override_opt.as_ref().is_some_and(|o| o.enhance_voice);
+            let cut_spans = override_opt
+              .as_ref()
+              .map(|o| o.spans.clone())
+              .unwrap_or_default();
+            let active_fillers = cut_spans
+              .iter()
+              .filter(|s| s.is_filler && !s.deleted)
+              .count();
+            let deleted_spans = cut_spans.iter().filter(|s| s.deleted).count();
+            let is_aligning = aligning_set.contains(&idx);
 
             rsx! {
               article {
@@ -879,6 +993,184 @@ fn CenterScriptDesk() -> Element {
                       s.text = v;
                     }
                   },
+                }
+
+                // Phase 2: Recorded Human Voice + Local Enhance + Text-Cut Bar
+                div {
+                  class: "flex flex-wrap items-center justify-between gap-2 pt-0.5 text-[11px]",
+                  div {
+                    class: "flex items-center gap-1.5 flex-wrap",
+                    if let Some(ref rec) = recorded_path {
+                      {
+                        let rec_short = short_filename(rec);
+                        let rec_for_align = rec.clone();
+                        let lang_for_align = seg.language.clone();
+                        rsx! {
+                          span {
+                            class: "px-2 py-0.5 rounded bg-[#38B2AC]/15 border border-[#38B2AC]/40 text-[#38B2AC] font-mono",
+                            title: "{rec}",
+                            "Rec: {rec_short}"
+                          }
+                          button {
+                            class: if enhance_on {
+                              "px-2 py-0.5 rounded bg-[#E8A238]/20 border border-[#E8A238]/60 text-[#E8A238] font-medium"
+                            } else {
+                              "px-2 py-0.5 rounded bg-[#252A31] border border-[#2D333C] text-[#9AA4B2] hover:text-[#ECEFF4]"
+                            },
+                            title: "Apply local STFT denoise + broadcast vocal EQ/compression",
+                            onclick: move |_| {
+                              state.mutate_project(|p| {
+                                if let Some(ov) = p.segment_overrides.get_mut(&idx) {
+                                  ov.enhance_voice = !ov.enhance_voice;
+                                }
+                              });
+                            },
+                            if enhance_on { "Voice Enhance: ON" } else { "Voice Enhance: OFF" }
+                          }
+                          button {
+                            class: "px-2 py-0.5 rounded bg-[#252A31] border border-[#2D333C] text-[#9AA4B2] hover:text-[#ECEFF4] disabled:opacity-40",
+                            disabled: is_aligning,
+                            title: "Run STT alignment (falls back to offline speech clip detection without STT key)",
+                            onclick: move |_| {
+                              let p = rec_for_align.clone();
+                              let l = lang_for_align.clone();
+                              async move {
+                                run_align_recording(&mut state, idx, p, l).await;
+                              }
+                            },
+                            if is_aligning { "Aligning..." } else { "Transcribe / Align" }
+                          }
+                          button {
+                            class: "px-1.5 py-0.5 rounded bg-[#252A31] text-[#9AA4B2] hover:text-[#E05252]",
+                            title: "Detach recording and revert segment to AI TTS",
+                            onclick: move |_| {
+                              state.mutate_project(|p| {
+                                p.segment_overrides.remove(&idx);
+                              });
+                              state.segment_audio.write().remove(&idx);
+                              state.status_msg.set(format!("Segment {:02} switched back to AI TTS", idx + 1));
+                            },
+                            "Use TTS"
+                          }
+                        }
+                      }
+                    } else {
+                      {
+                        let lang_for_attach = seg.language.clone();
+                        rsx! {
+                          button {
+                            class: "px-2 py-0.5 rounded bg-[#252A31] border border-[#2D333C] text-[#9AA4B2] hover:text-[#ECEFF4] hover:border-[#38B2AC] transition",
+                            title: "Attach a real human voice recording for text-based audio cutting and local voice enhancement",
+                            onclick: move |_| {
+                              let l = lang_for_attach.clone();
+                              async move {
+                                run_attach_recording(&mut state, idx, l).await;
+                              }
+                            },
+                            "+ Attach Voice Recording"
+                          }
+                        }
+                      }
+                    }
+                  }
+
+                  if !cut_spans.is_empty() {
+                    div {
+                      class: "flex items-center gap-1.5",
+                      if active_fillers > 0 {
+                        button {
+                          class: "px-2 py-0.5 rounded bg-[#E8A238]/20 border border-[#E8A238]/50 text-[#E8A238] hover:bg-[#E8A238]/30",
+                          onclick: move |_| {
+                            let removed = state.mutate_project(|p| {
+                              let count = p
+                                .segment_overrides
+                                .get_mut(&idx)
+                                .map(SegmentMediaOverride::delete_all_fillers)
+                                .unwrap_or(0);
+                              if let Some(active) = p
+                                .segment_overrides
+                                .get(&idx)
+                                .and_then(SegmentMediaOverride::active_text)
+                                && !active.trim().is_empty()
+                                && let Some(s) = p.script.segments.get_mut(idx)
+                              {
+                                s.text = active;
+                              }
+                              count
+                            });
+                            state.status_msg.set(format!("Cut {removed} filler span(s) in segment {:02}", idx + 1));
+                          },
+                          "Cut Fillers ({active_fillers})"
+                        }
+                      }
+                      if deleted_spans > 0 {
+                        button {
+                          class: "px-2 py-0.5 rounded bg-[#252A31] border border-[#2D333C] text-[#9AA4B2] hover:text-[#ECEFF4]",
+                          onclick: move |_| {
+                            state.mutate_project(|p| {
+                              if let Some(ov) = p.segment_overrides.get_mut(&idx) {
+                                ov.restore_all_spans();
+                                if let Some(active) = ov.active_text()
+                                  && !active.trim().is_empty()
+                                  && let Some(s) = p.script.segments.get_mut(idx)
+                                {
+                                  s.text = active;
+                                }
+                              }
+                            });
+                          },
+                          "Restore ({deleted_spans})"
+                        }
+                      }
+                    }
+                  }
+                }
+
+                // Interactive Click-to-Cut Text Chips ("改文本即剪音频")
+                if !cut_spans.is_empty() {
+                  div {
+                    class: "bg-[#141619] border border-[#2D333C] rounded p-2 flex flex-wrap gap-1.5",
+                    for (span_idx, span) in cut_spans.iter().enumerate() {
+                      {
+                        let chip_class = if span.deleted {
+                          "px-2 py-0.5 rounded border text-xs line-through opacity-45 bg-[#1C1F24] border-[#E05252]/40 text-[#E05252] hover:opacity-80"
+                        } else if span.is_filler {
+                          "px-2 py-0.5 rounded border text-xs bg-[#E8A238]/15 border-[#E8A238]/60 text-[#E8A238] hover:bg-[#E8A238]/25"
+                        } else {
+                          "px-2 py-0.5 rounded border text-xs bg-[#252A31] border-[#2D333C] text-[#ECEFF4] hover:border-[#E05252]/60"
+                        };
+                        let tooltip = format!(
+                          "{}–{} · click to {}",
+                          format_timecode(span.start_secs),
+                          format_timecode(span.end_secs),
+                          if span.deleted { "restore" } else { "cut audio" }
+                        );
+                        rsx! {
+                          button {
+                            key: "span-{idx}-{span_idx}",
+                            class: "{chip_class}",
+                            title: "{tooltip}",
+                            onclick: move |_| {
+                              state.mutate_project(|p| {
+                                if let Some(ov) = p.segment_overrides.get_mut(&idx)
+                                  && let Some(sp) = ov.spans.get_mut(span_idx)
+                                {
+                                  sp.deleted = !sp.deleted;
+                                  if let Some(active) = ov.active_text()
+                                    && !active.trim().is_empty()
+                                    && let Some(s) = p.script.segments.get_mut(idx)
+                                  {
+                                    s.text = active;
+                                  }
+                                }
+                              });
+                            },
+                            "{span.text}"
+                          }
+                        }
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -1409,6 +1701,72 @@ async fn run_export_episode(
       .status_msg
       .set(format!("Exported {label} to {}", path.display())),
     Err(e) => state.status_msg.set(format!("Export failed: {e}")),
+  }
+}
+
+async fn run_attach_recording(state: &mut AppState, seg_idx: usize, language_hint: Option<String>) {
+  let Some(path) = pick_audio_path().await else {
+    return;
+  };
+  state.mutate_project(|p| {
+    p.segment_overrides.insert(
+      seg_idx,
+      SegmentMediaOverride {
+        recorded_path: Some(path.clone()),
+        enhance_voice: true,
+        ..SegmentMediaOverride::default()
+      },
+    );
+  });
+  state.segment_audio.write().remove(&seg_idx);
+  run_align_recording(state, seg_idx, path, language_hint).await;
+}
+
+async fn run_align_recording(
+  state: &mut AppState,
+  seg_idx: usize,
+  recorded_path: String,
+  language_hint: Option<String>,
+) {
+  state.aligning_segments.write().insert(seg_idx);
+  state.status_msg.set(format!(
+    "Aligning recording for segment {:02}...",
+    seg_idx + 1
+  ));
+
+  let res = align_recorded_segment(recorded_path, language_hint).await;
+  state.aligning_segments.write().remove(&seg_idx);
+
+  match res {
+    Ok((spans, transcript_text, used_stt)) => {
+      let count = spans.len();
+      let fillers = spans.iter().filter(|s| s.is_filler).count();
+      state.mutate_project(|p| {
+        if let Some(ov) = p.segment_overrides.get_mut(&seg_idx) {
+          ov.spans = spans;
+        }
+        if used_stt
+          && !transcript_text.trim().is_empty()
+          && let Some(seg) = p.script.segments.get_mut(seg_idx)
+        {
+          seg.text = transcript_text;
+        }
+      });
+      state.status_msg.set(if used_stt {
+        format!(
+          "STT aligned segment {:02}: {count} clickable spans ({fillers} fillers) — click any chip to cut audio",
+          seg_idx + 1
+        )
+      } else {
+        format!(
+          "Offline VAD detected {count} speech clip(s) in segment {:02} — click any chip to cut audio",
+          seg_idx + 1
+        )
+      });
+    }
+    Err(e) => {
+      state.status_msg.set(format!("Alignment failed: {e}"));
+    }
   }
 }
 
