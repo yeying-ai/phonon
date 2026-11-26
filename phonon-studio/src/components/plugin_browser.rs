@@ -3,6 +3,10 @@
 use crate::state::{ActivePluginState, AppState};
 use crate::studio_ops::instantiate_active_plugins;
 use dioxus::prelude::*;
+use dioxus_shadcn::{
+  Badge, BadgeSize, BadgeStyle, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, Empty,
+  EmptyDescription, Label, Separator, Slider,
+};
 
 /// Plugin browser sidebar panel for Audio Lab.
 ///
@@ -34,14 +38,16 @@ pub fn PluginBrowser() -> Element {
 
       // Available Plugins
       div {
-        h3 { class: "text-xs font-semibold text-[#ECEFF4] mb-2.5", "Available DSP Plugins" }
+        h3 { class: "text-xs font-semibold text-foreground mb-2.5", "Available DSP Plugins" }
         div { class: "flex flex-col gap-1.5",
           for (id, name) in available.iter() {
-            div {
-              class: "flex items-center justify-between bg-[#141619] border border-[#2D333C] rounded px-2.5 py-1.5",
-              span { class: "text-xs text-[#ECEFF4]", "{name}" }
-              button {
-                class: "text-[11px] bg-[#252A31] border border-[#2D333C] text-[#ECEFF4] px-2 py-0.5 rounded hover:border-[#38B2AC]",
+            Card {
+              class: "flex items-center justify-between bg-background px-2.5 py-1.5 shadow-none",
+              span { class: "text-xs text-foreground", "{name}" }
+              Button {
+                variant: ButtonVariant::Outline,
+                size: ButtonSize::Xs,
+                class: "h-6 px-2 text-[11px] bg-secondary hover:border-info",
                 onclick: {
                   let plugin_id = id.to_string();
                   move |_| add_plugin(&mut state, &plugin_id)
@@ -53,50 +59,68 @@ pub fn PluginBrowser() -> Element {
         }
       }
 
-      div { class: "h-px bg-[#2D333C]" }
+      Separator { decorative: true }
 
       // Active Chain
       div {
-        h3 { class: "text-xs font-semibold text-[#ECEFF4] mb-2.5", "Active Chain ({active_plugins.len()})" }
+        div {
+          class: "flex items-center justify-between mb-2.5",
+          h3 { class: "text-xs font-semibold text-foreground", "Active Chain" }
+          Badge {
+            variant: BadgeVariant::Secondary,
+            style: BadgeStyle::Soft,
+            size: BadgeSize::Xs,
+            class: "font-mono tabular-nums",
+            "{active_plugins.len()}"
+          }
+        }
 
         if active_plugins.is_empty() {
-          p { class: "text-xs text-[#647080]", "No plugins in the chain. Add one above to process playback and export." }
+          Empty {
+            class: "min-h-24 p-4 gap-2 bg-background",
+            EmptyDescription {
+              class: "text-xs",
+              "No plugins in the chain. Add one above to process playback and export."
+            }
+          }
         } else {
           div { class: "flex flex-col gap-2.5 mb-3",
             for (idx, plugin) in active_plugins.iter().enumerate() {
-              div {
+              Card {
                 key: "plugin-{idx}-{plugin.id}",
-                class: "bg-[#141619] border border-[#2D333C] rounded p-2.5 flex flex-col gap-2",
+                class: "bg-background p-2.5 flex flex-col gap-2 shadow-none",
                 div {
                   class: "flex items-center justify-between",
-                  span { class: "text-xs text-[#ECEFF4] font-medium", "{idx + 1}. {plugin.name}" }
-                  button {
-                    class: "text-[11px] text-[#647080] hover:text-[#E05252] px-1",
+                  span { class: "text-xs text-foreground font-medium", "{idx + 1}. {plugin.name}" }
+                  Button {
+                    variant: ButtonVariant::Ghost,
+                    size: ButtonSize::Xs,
+                    class: "h-6 w-6 p-0 text-muted-foreground hover:text-destructive",
                     title: "Remove plugin",
                     onclick: move |_| remove_plugin(&mut state, idx),
                     "×"
                   }
                 }
                 for (pname, val, min, max, _default) in plugin.params.iter() {
-                  div { class: "flex flex-col gap-1",
+                  div { class: "flex flex-col gap-1.5",
                     div {
                       class: "flex items-center justify-between text-[11px]",
-                      label { class: "text-[#9AA4B2]", "{pname}" }
-                      span { class: "font-mono tabular-nums text-[#ECEFF4]", "{val:.2}" }
+                      Label { class: "text-[11px] font-normal text-muted-foreground", "{pname}" }
+                      span { class: "font-mono tabular-nums text-foreground", "{val:.2}" }
                     }
-                    input {
-                      r#type: "range",
-                      min: "{min}",
-                      max: "{max}",
-                      step: "0.01",
-                      value: "{val}",
-                      class: "w-full accent-[#38B2AC]",
-                      oninput: {
+                    Slider {
+                      value: f64::from(*val),
+                      min: f64::from(*min),
+                      max: f64::from(*max),
+                      step: 0.01,
+                      track_class: "h-1.5",
+                      range_class: "bg-info",
+                      thumb_class: "h-3.5 w-3.5 border-info",
+                      "aria-label": "{plugin.name} {pname}",
+                      on_value_change: {
                         let param_name = pname.clone();
-                        move |evt| {
-                          if let Ok(v) = evt.value().parse::<f32>() {
-                            update_plugin_param(&mut state, idx, &param_name, v);
-                          }
+                        move |v: f64| {
+                          update_plugin_param(&mut state, idx, &param_name, v as f32);
                         }
                       },
                     }
@@ -106,8 +130,10 @@ pub fn PluginBrowser() -> Element {
             }
           }
 
-          button {
-            class: "w-full px-3 py-1.5 rounded text-xs font-medium bg-[#252A31] border border-[#E05252]/40 text-[#E05252] hover:bg-[#E05252]/15 transition",
+          Button {
+            variant: ButtonVariant::Outline,
+            size: ButtonSize::Xs,
+            class: "w-full bg-secondary border-destructive/40 text-destructive hover:bg-destructive/15",
             onclick: move |_| clear_all_plugins(&mut state),
             "Clear Chain"
           }

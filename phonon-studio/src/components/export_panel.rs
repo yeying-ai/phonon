@@ -3,45 +3,56 @@
 use crate::state::AppState;
 use crate::studio_ops::bake_plugins_into_buffer;
 use dioxus::prelude::*;
+use dioxus_shadcn::{
+  Button, ButtonSize, ButtonVariant, Label, NativeSelect, NativeSelectOption, NativeSelectSize,
+  Switch, SwitchSize,
+};
 
 #[component]
 pub fn ExportPanel() -> Element {
   let mut state = use_context::<AppState>();
   let bake = (state.bake_plugins_on_export)();
   let plugin_count = state.active_plugins.read().len();
+  let bitrate = (state.export_bitrate)();
 
   rsx! {
     div {
       class: "flex flex-col gap-3",
-      h3 { class: "text-xs font-semibold text-[#ECEFF4]", "Export Audio" }
+      h3 { class: "text-xs font-semibold text-foreground", "Export Audio" }
 
-      // Bake active plugins option
-      label {
-        class: "flex items-center gap-2 text-xs text-[#9AA4B2] cursor-pointer",
-        input {
-          r#type: "checkbox",
-          class: "accent-[#38B2AC]",
-          checked: bake,
-          onchange: move |evt| state.bake_plugins_on_export.set(evt.checked()),
+      // Bake active plugins option (dioxus-shadcn Switch)
+      div {
+        class: "flex items-center justify-between gap-2 py-0.5",
+        Label {
+          r#for: "audiolab-bake-plugins",
+          class: "text-xs font-normal text-muted-foreground cursor-pointer",
+          "Bake active plugin chain ({plugin_count})"
         }
-        "Bake active plugin chain ({plugin_count})"
+        Switch {
+          id: "audiolab-bake-plugins",
+          size: SwitchSize::Sm,
+          checked: bake,
+          on_checked_change: move |checked: bool| state.bake_plugins_on_export.set(checked),
+        }
       }
 
       // MP3 Bitrate
       div {
-        label { class: "text-[11px] text-[#9AA4B2] block mb-1", "MP3 Bitrate (kbps)" }
-        select {
-          class: "w-full bg-[#252A31] border border-[#2D333C] text-[#ECEFF4] rounded px-2 py-1.5 text-xs font-mono",
-          value: "{(state.export_bitrate)()}",
-          onchange: move |evt| {
-            if let Ok(v) = evt.value().parse::<u32>() {
+        class: "flex flex-col gap-1",
+        Label { class: "text-[11px] font-normal text-muted-foreground", "MP3 Bitrate (kbps)" }
+        NativeSelect {
+          size: NativeSelectSize::Sm,
+          class: "font-mono bg-secondary",
+          value: "{bitrate}",
+          on_value_change: move |val: String| {
+            if let Ok(v) = val.parse::<u32>() {
               state.export_bitrate.set(v);
             }
           },
-          option { value: "128", "128 kbps" }
-          option { value: "192", "192 kbps" }
-          option { value: "256", "256 kbps" }
-          option { value: "320", "320 kbps" }
+          NativeSelectOption { value: "128", selected: bitrate == 128, "128 kbps" }
+          NativeSelectOption { value: "192", selected: bitrate == 192, "192 kbps" }
+          NativeSelectOption { value: "256", selected: bitrate == 256, "256 kbps" }
+          NativeSelectOption { value: "320", selected: bitrate == 320, "320 kbps" }
         }
       }
 
@@ -60,11 +71,13 @@ pub fn ExportPanel() -> Element {
 fn ExportButton(format: &'static str, ext: &'static str, primary: bool) -> Element {
   let mut state = use_context::<AppState>();
   rsx! {
-    button {
+    Button {
+      variant: if primary { ButtonVariant::Primary } else { ButtonVariant::Outline },
+      size: ButtonSize::Sm,
       class: if primary {
-        "w-full px-3 py-2 rounded text-xs font-semibold bg-[#E8A238] text-[#141619] hover:opacity-90 transition"
+        "w-full text-xs font-semibold".to_string()
       } else {
-        "w-full px-3 py-2 rounded text-xs font-medium bg-[#252A31] border border-[#2D333C] text-[#ECEFF4] hover:border-[#9AA4B2] transition"
+        "w-full text-xs bg-secondary hover:border-muted-foreground".to_string()
       },
       onclick: move |_| async move {
         export_audio(&mut state, format, ext).await;

@@ -6,6 +6,9 @@ use crate::studio_ops::{
   instantiate_active_plugins,
 };
 use dioxus::prelude::*;
+use dioxus_shadcn::{
+  SonnerItem, SonnerQueue, SonnerVariant, sonner_queue_dismiss, sonner_queue_push,
+};
 use phonon_core::{AudioBuffer, PluginRegistry, algorithms};
 use phonon_engine::{AudioPlayer, AudioRecorder, PlaybackState};
 use phonon_podcast::Episode;
@@ -107,9 +110,11 @@ pub enum SidePanel {
 /// Global application state provided via Dioxus context.
 #[derive(Clone, Copy)]
 pub struct AppState {
-  // ── Navigation ───────────────────────────────────────────────────────
+  // ── Navigation & Notifications ───────────────────────────────────────
   pub active_tab: Signal<WorkspaceTab>,
   pub status_msg: Signal<String>,
+  pub toasts: Signal<SonnerQueue>,
+  pub toast_seq: Signal<u64>,
 
   // ── AI Podcast Studio ────────────────────────────────────────────────
   pub project: Signal<StudioProject>,
@@ -163,6 +168,8 @@ impl AppState {
     Self {
       active_tab: Signal::new(WorkspaceTab::PodcastStudio),
       status_msg: Signal::new("Ready — Edit script or click Preview on any segment".to_string()),
+      toasts: Signal::new(SonnerQueue::new(3)),
+      toast_seq: Signal::new(0),
 
       project: Signal::new(StudioProject::starter()),
       project_path: Signal::new(None),
@@ -237,6 +244,25 @@ impl AppState {
       self.status_msg.set("Redid change".to_string());
     }
     changed
+  }
+
+  /// Updates the bottom status line and pushes a transient Sonner toast.
+  pub fn notify(&mut self, message: impl Into<String>, variant: SonnerVariant) {
+    let msg = message.into();
+    self.status_msg.set(msg.clone());
+    let next_id = (self.toast_seq)().wrapping_add(1);
+    self.toast_seq.set(next_id);
+    let item = SonnerItem::new(format!("toast-{next_id}"), msg)
+      .with_variant(variant)
+      .with_duration_ms(4500);
+    let queue = self.toasts.read().clone();
+    self.toasts.set(sonner_queue_push(queue, item));
+  }
+
+  /// Dismisses a Sonner toast by id.
+  pub fn dismiss_toast(&mut self, id: &str) {
+    let queue = self.toasts.read().clone();
+    self.toasts.set(sonner_queue_dismiss(queue, id));
   }
 }
 

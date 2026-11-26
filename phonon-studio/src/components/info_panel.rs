@@ -3,6 +3,7 @@
 use crate::project::{format_db, format_timecode};
 use crate::state::AppState;
 use dioxus::prelude::*;
+use dioxus_shadcn::{Card, Label};
 
 #[component]
 pub fn InfoPanel() -> Element {
@@ -12,8 +13,8 @@ pub fn InfoPanel() -> Element {
   };
 
   rsx! {
-    div {
-      class: "bg-[#1C1F24] p-4 rounded-md border border-[#2D333C] w-full max-w-5xl mt-4",
+    Card {
+      class: "p-4 w-full max-w-5xl mt-4 shadow-none",
       div {
         class: "grid grid-cols-2 md:grid-cols-5 gap-4",
         InfoItem { label: "File", value: info.path.clone(), mono: false }
@@ -36,12 +37,12 @@ fn InfoItem(label: &'static str, value: String, mono: bool) -> Element {
   rsx! {
     div {
       class: "flex flex-col gap-0.5 min-w-0",
-      label { class: "text-[11px] text-[#9AA4B2]", "{label}" }
+      Label { class: "text-[11px] font-normal text-muted-foreground", "{label}" }
       span {
         class: if mono {
-          "text-xs font-mono tabular-nums font-medium text-[#ECEFF4] truncate"
+          "text-xs font-mono tabular-nums font-medium text-foreground truncate"
         } else {
-          "text-xs font-medium text-[#ECEFF4] truncate"
+          "text-xs font-medium text-foreground truncate"
         },
         title: "{value}",
         "{value}"

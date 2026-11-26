@@ -3,6 +3,10 @@
 use crate::project::format_timecode;
 use crate::state::{AppState, WorkspaceTab, play_buffer};
 use dioxus::prelude::*;
+use dioxus_shadcn::{
+  ButtonSize, ButtonVariant, Separator, SeparatorOrientation, Slider, Tooltip, TooltipContent,
+  TooltipSide, TooltipTrigger, button_class, use_density,
+};
 use phonon_engine::PlaybackState;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,6 +14,7 @@ use std::time::Duration;
 #[component]
 pub fn Transport() -> Element {
   let mut state = use_context::<AppState>();
+  let density = use_density();
 
   // Poll live playhead position & playback state while active.
   use_future(move || async move {
@@ -53,114 +58,175 @@ pub fn Transport() -> Element {
   let vol_pct = format!("{:.0}%", vol * 100.0);
   let seek_max = dur.max(0.01);
 
+  let play_btn_class = if pb_status == PlaybackState::Playing {
+    button_class(
+      ButtonVariant::Primary,
+      ButtonSize::Xs,
+      density,
+      "px-3 font-semibold",
+    )
+  } else {
+    button_class(
+      ButtonVariant::Secondary,
+      ButtonSize::Xs,
+      density,
+      "px-3 font-semibold hover:bg-primary hover:text-primary-foreground",
+    )
+  };
+
+  let pause_btn_class = if pb_status == PlaybackState::Paused {
+    button_class(
+      ButtonVariant::Soft,
+      ButtonSize::Xs,
+      density,
+      "border border-primary/40 text-primary",
+    )
+  } else {
+    button_class(ButtonVariant::Secondary, ButtonSize::Xs, density, "")
+  };
+
+  let stop_btn_class = button_class(
+    ButtonVariant::Secondary,
+    ButtonSize::Xs,
+    density,
+    "text-muted-foreground hover:text-destructive",
+  );
+
   rsx! {
     footer {
-      class: "h-14 shrink-0 bg-[#1C1F24] px-4 border-t border-[#2D333C] flex items-center justify-between gap-4 select-none",
+      class: "h-14 shrink-0 bg-card px-4 border-t border-border flex items-center justify-between gap-4 select-none",
 
       // Left: Transport buttons
       div {
         class: "flex items-center gap-1.5 shrink-0",
-        button {
-          class: if pb_status == PlaybackState::Playing {
-            "px-3 py-1.5 rounded text-xs font-semibold bg-[#E8A238] text-[#141619]"
-          } else {
-            "px-3 py-1.5 rounded text-xs font-semibold bg-[#252A31] text-[#ECEFF4] hover:bg-[#E8A238] hover:text-[#141619] transition"
-          },
-          title: "Play / Resume",
-          onclick: move |_| async move {
-            handle_play_click(&mut state).await;
-          },
-          "▶"
+
+        Tooltip {
+          delay_ms: 400,
+          TooltipTrigger {
+            class: play_btn_class,
+            "aria-label": "Play or resume",
+            onclick: move |_| async move {
+              handle_play_click(&mut state).await;
+            },
+            "▶"
+          }
+          TooltipContent {
+            side: TooltipSide::Top,
+            "Play / Resume"
+          }
         }
-        button {
-          class: if pb_status == PlaybackState::Paused {
-            "px-2.5 py-1.5 rounded text-xs bg-[#E8A238]/25 text-[#E8A238] border border-[#E8A238]/40"
-          } else {
-            "px-2.5 py-1.5 rounded text-xs bg-[#252A31] text-[#ECEFF4] hover:bg-[#2D333C]"
-          },
-          title: "Pause",
-          onclick: move |_| {
-            if let Some(player) = state.player_state.read().as_ref() {
-              player.pause();
-              state.playback_status.set(PlaybackState::Paused);
-              state.status_msg.set("Paused".to_string());
-            }
-          },
-          "⏸"
+
+        Tooltip {
+          delay_ms: 400,
+          TooltipTrigger {
+            class: pause_btn_class,
+            "aria-label": "Pause playback",
+            onclick: move |_| {
+              if let Some(player) = state.player_state.read().as_ref() {
+                player.pause();
+                state.playback_status.set(PlaybackState::Paused);
+                state.status_msg.set("Paused".to_string());
+              }
+            },
+            "⏸"
+          }
+          TooltipContent {
+            side: TooltipSide::Top,
+            "Pause"
+          }
         }
-        button {
-          class: "px-2.5 py-1.5 rounded text-xs bg-[#252A31] text-[#9AA4B2] hover:text-[#E05252] hover:bg-[#2D333C]",
-          title: "Stop",
-          onclick: move |_| {
-            if let Some(player) = state.player_state.read().as_ref() {
-              player.stop();
-              state.playback_status.set(PlaybackState::Stopped);
-              state.playhead_secs.set(0.0);
-              state.status_msg.set("Stopped".to_string());
-            }
-          },
-          "⏹"
+
+        Tooltip {
+          delay_ms: 400,
+          TooltipTrigger {
+            class: stop_btn_class,
+            "aria-label": "Stop playback",
+            onclick: move |_| {
+              if let Some(player) = state.player_state.read().as_ref() {
+                player.stop();
+                state.playback_status.set(PlaybackState::Stopped);
+                state.playhead_secs.set(0.0);
+                state.status_msg.set("Stopped".to_string());
+              }
+            },
+            "⏹"
+          }
+          TooltipContent {
+            side: TooltipSide::Top,
+            "Stop"
+          }
         }
       }
 
-      // Center: Interactive Seek bar + Timecode + Source label
+      // Center: Interactive Seek Slider + Timecode + Source label
       div {
         class: "flex-1 min-w-0 max-w-2xl flex items-center gap-3",
         span {
-          class: "hidden lg:inline-block text-[11px] text-[#9AA4B2] truncate max-w-[160px] shrink-0",
+          class: "hidden lg:inline-block text-[11px] text-muted-foreground truncate max-w-[160px] shrink-0",
           title: "{source}",
           "{source}"
         }
-        input {
-          r#type: "range",
-          min: "0",
-          max: "{seek_max}",
-          step: "0.05",
-          value: "{pos.clamp(0.0, seek_max)}",
+        Slider {
+          value: pos.clamp(0.0, seek_max),
+          min: 0.0,
+          max: seek_max,
+          step: 0.05,
           disabled: dur <= 0.0,
-          class: "flex-1 accent-[#E8A238] disabled:opacity-40",
-          oninput: move |evt| {
-            if let Ok(target) = evt.value().parse::<f64>() {
-              state.playhead_secs.set(target);
-              if let Some(player) = state.player_state.read().as_ref() {
-                let _ = player.seek(target);
-              }
+          class: "flex-1",
+          track_class: "h-1.5",
+          thumb_class: "h-3.5 w-3.5",
+          "aria-label": "Playback seek position",
+          on_value_change: move |target: f64| {
+            state.playhead_secs.set(target);
+            if let Some(player) = state.player_state.read().as_ref() {
+              let _ = player.seek(target);
             }
           },
         }
         span {
-          class: "text-xs font-mono tabular-nums text-[#ECEFF4] shrink-0 w-32 text-right",
+          class: "text-xs font-mono tabular-nums text-foreground shrink-0 w-32 text-right",
           "{time_display}"
         }
       }
 
-      // Right: Live Volume + Status
+      // Right: Live Volume Slider + Status
       div {
         class: "flex items-center gap-3 shrink-0",
         div {
-          class: "flex items-center gap-1.5",
-          span { class: "text-[11px] text-[#9AA4B2]", "Vol" }
-          input {
-            r#type: "range",
-            min: "0",
-            max: "1.5",
-            step: "0.01",
-            value: "{vol}",
-            class: "w-20 accent-[#38B2AC]",
-            oninput: move |evt| {
-              if let Ok(v) = evt.value().parse::<f32>() {
-                state.volume.set(v);
-                if let Some(player) = state.player_state.read().as_ref() {
-                  player.set_volume(v);
-                }
+          class: "flex items-center gap-2",
+          span { class: "text-[11px] text-muted-foreground", "Vol" }
+          Slider {
+            value: f64::from(vol),
+            min: 0.0,
+            max: 1.5,
+            step: 0.01,
+            class: "w-20",
+            track_class: "h-1.5",
+            range_class: "bg-info",
+            thumb_class: "h-3.5 w-3.5 border-info",
+            "aria-label": "Playback volume",
+            on_value_change: move |v: f64| {
+              let vol_f32 = v as f32;
+              state.volume.set(vol_f32);
+              if let Some(player) = state.player_state.read().as_ref() {
+                player.set_volume(vol_f32);
               }
             },
           }
-          span { class: "text-[11px] font-mono tabular-nums text-[#9AA4B2] w-9 text-right", "{vol_pct}" }
+          span {
+            class: "text-[11px] font-mono tabular-nums text-muted-foreground w-9 text-right",
+            "{vol_pct}"
+          }
+        }
+
+        Separator {
+          orientation: SeparatorOrientation::Vertical,
+          decorative: true,
+          class: "hidden xl:block h-5",
         }
 
         div {
-          class: "hidden xl:block text-xs text-[#9AA4B2] max-w-[260px] truncate border-l border-[#2D333C] pl-3",
+          class: "hidden xl:block text-xs text-muted-foreground max-w-[260px] truncate",
           title: "{status_msg}",
           "{status_msg}"
         }

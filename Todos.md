@@ -302,3 +302,20 @@
 - [x] **R2** `phonon-studio` 应用内直录集成：播客分段直录（`● Record Mic` / `■ Stop & Attach` 实时红灯 VU 电平条、原子落盘至 `recordings/` 并自动对齐增强）+ Audio Lab 顶栏直录
 - [x] **R3** `phonon-mcp` 补齐 `audio_eq` / `audio_compress`（工具总数达 23 个）与 `phonon-io` 的 `mp3` / `ogg` 可选 C 编码器 feature 隔离（支持 `--no-default-features` 纯 Rust MIT/Apache-2.0 构建）
 - [x] **R4** `phonon-tests` 清单清理与跨 crate 集成测试扩展（FLAC/OGG 标签回读、Phase 2 端到端语音管线、MCP 异步双工 stdio 23 工具测试）、CI 新增 `build-studio` 与纯 Rust `phonon-io` 检查，以及 workspace `0.9.0` 版本号与发布文档同步
+
+## v0.10.0 — Phonon Studio UI 迁移至 `dioxus-shadcn`（双仓双向验证）
+
+> 规划见 `studio_dioxus_shadcn_migration_plan.md`。坚持直接消费 crates.io 已发布的 `dioxus-shadcn` (`0.7.0+`) 与 `dxui` CLI；若在真实 Desktop WebView 迁移与验收中发现上游缺陷，先在 `/Users/hal/arch/dioxus-ui` 撰写 RFC 与 `TODOs.md`（`M226+`），按其发版流程推送到 crates.io 后再回到 `phonon-studio` 升级验收。
+
+- [x] **U1** 基建接入、语义主题与 CLI 验证：`phonon-studio` 设为 `rust-version = "1.88"`，引入 crates.io `dioxus-shadcn 0.7.0`（按需 features），实跑已发布 `dxui init` 生成样式与 `@source`，将 Broadcast Mastering Console 暗色配色映射到 RFC 0051 语义 Token，跑通 Tailwind v4 构建、`clippy`、测试与桌面冒烟
+  - DONE (`6dd5000`): crates.io `dioxus-shadcn 0.7.0` + `dxui 0.7.0` 实跑接入完成；Tailwind v4 59ms 构建、clippy 0 告警、16 单测全绿。记录首条真实 CLI 观察：`dxui init` 在 Crate 模式下仍会创建空白 `src/components/ui/mod.rs`（`FB-studio-01` 候选）
+- [x] **U2** 迁移 `Header` 与 `Transport`：`Button` / `Tabs` / `Badge` / `Separator` / `Tooltip` / `Kbd` / `Slider`，并实测 macOS Desktop WebView 下 8Hz 播放头刷新与拖拽 Seek/Volume 流畅度
+  - DONE (`5a66f48`): `Header` 与 `Transport` 全面迁至 `dioxus-shadcn` (`Tabs` / `Button` / `Badge` / `Separator` / `Tooltip` / `Slider`) 与语义颜色 Token；Tailwind v4 构建 59ms、clippy 0 告警、16 单测全绿（桌面交互流畅度随 U5 整窗验收实测）
+- [x] **U3** 迁移 `AudioLab` 及其 4 个功能面板（`EffectsPanel` / `EqPanel` / `PluginBrowser` / `ExportPanel`），实测 10+ 并发 `Slider`、`NativeSelect`/`Select`、`Checkbox`/`Switch`、`Card`、`Empty`
+  - DONE (`b5c8d48`): 完成 `AudioLabView`（`ResizablePanelGroup` + `Empty`）、`WaveformView`、`InfoPanel` 及 4 个 DSP/导出面板迁移，全部通过 Tailwind v4（58ms）、fmt、clippy 与 16 单测
+- [x] **U4** 拆分并迁移 `PodcastStudioView`（将 1917 行拆为 `components/studio/` 子模块），接入 `ResizablePanelGroup` 三栏、`Dialog`/`Sheet`（AI Draft & MCP Sync）、`Tabs`（Underline Inspector）、`Card` / `Input` / `Textarea` / `Button` (`loading`) / `Badge` / `Sonner`
+  - DONE (`d1d37c4`): 拆分为 `components/podcast_studio/{mod,left_rail,script_desk,episode_inspector,actions}.rs`，接入三栏 `ResizablePanelGroup`、AI Draft & MCP `Dialog`、`Tabs`（Underline）与全局 `Sonner` 通知队列，收敛至 17 个已用 features，fmt/clippy/16 单测全绿
+- [x] **U5** Desktop WebView 全链路交互验收与 `FB-studio-*` 上游实测缺陷清单沉淀（区分 `dioxus-ui` 真实缺陷与业务适配）
+  - DONE: 沉淀 `FB-studio-01` 至 `FB-studio-07`（见 `dioxus_shadcn_feedback_v0.7.0.md`），并在 `dioxus-ui` 分支 `feat/desktop-workstation-ergonomics` 按 RFC 0083 / `M226.1`–`M226.5`（`3b72f2ea`..`db3c68ad`）完成全部 5 项修复与门禁校验并推送至远端，待 PR 合并及 crates.io 发布 `0.8.0` 后进入 U6
+- [x] **U6** 消费上游 `dioxus-shadcn` 修复版本（升级 crates.io 版本、重跑 `dxui init` 验证 `@source` 自动更新、清理临时绕过、更新文档与全工作区门禁）
+  - DONE (`3c58677`): `dioxus-shadcn` 4 个 crate 与 `dxui` 发布 `0.8.0`（含 PR #28 与 RFC 0083 / M226）并打 `v0.8.0` tag；`phonon-studio` 升级至 crates.io `dioxus-shadcn 0.8.0`、实跑 `dxui 0.8.0 init` 验证 `@source` 自动切至 `0.8.0` 且不生成空 `src/components/ui/mod.rs`，全面启用 `UiDensity::Compact`、`NativeSelectSize::Sm` 与 `Slider::on_value_commit` 单次 Undo 提交，Tailwind v4 构建（67ms）、`fmt`/`clippy -D warnings`/`cargo test --workspace`/`cargo build -p phonon-studio` 全绿

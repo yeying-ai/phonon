@@ -2,6 +2,10 @@
 
 use crate::state::{AppState, transform_audio};
 use dioxus::prelude::*;
+use dioxus_shadcn::{
+  Button, ButtonSize, ButtonVariant, Label, NativeSelect, NativeSelectOption, NativeSelectSize,
+  Slider,
+};
 use phonon_core::{EqBand, FilterType, algorithms};
 
 const BAND_INFO: [(f64, &str); 5] = [
@@ -15,19 +19,21 @@ const BAND_INFO: [(f64, &str); 5] = [
 #[component]
 pub fn EqPanel() -> Element {
   let mut state = use_context::<AppState>();
+  let preset_val = (state.effects)().eq_preset;
 
   rsx! {
     div {
       class: "flex flex-col gap-3",
-      h3 { class: "text-xs font-semibold text-[#ECEFF4]", "5-Band Parametric EQ" }
+      h3 { class: "text-xs font-semibold text-foreground", "5-Band Parametric EQ" }
 
       div {
-        label { class: "text-[11px] text-[#9AA4B2] block mb-1", "Preset" }
-        select {
-          class: "w-full bg-[#252A31] border border-[#2D333C] text-[#ECEFF4] rounded px-2 py-1.5 text-xs",
-          value: "{(state.effects)().eq_preset}",
-          onchange: move |evt| {
-            let preset = evt.value();
+        class: "flex flex-col gap-1",
+        Label { class: "text-[11px] font-normal text-muted-foreground", "Preset" }
+        NativeSelect {
+          size: NativeSelectSize::Sm,
+          class: "bg-secondary",
+          value: "{preset_val}",
+          on_value_change: move |preset: String| {
             let gains = match preset.as_str() {
               "voice" => [0.0, 0.0, 3.0, 2.0, -3.0],
               "bass_heavy" => [8.0, 5.0, 0.0, -1.0, -3.0],
@@ -38,38 +44,42 @@ pub fn EqPanel() -> Element {
             eff.eq_preset = preset;
             eff.eq_gains = gains;
           },
-          option { value: "none", "Flat" }
-          option { value: "voice", "Voice Presence" }
-          option { value: "bass_heavy", "Warm Bass" }
-          option { value: "bright", "Air & Detail" }
-          option { value: "custom", "Custom" }
+          NativeSelectOption { value: "none", selected: preset_val == "none", "Flat" }
+          NativeSelectOption { value: "voice", selected: preset_val == "voice", "Voice Presence" }
+          NativeSelectOption { value: "bass_heavy", selected: preset_val == "bass_heavy", "Warm Bass" }
+          NativeSelectOption { value: "bright", selected: preset_val == "bright", "Air & Detail" }
+          NativeSelectOption { value: "custom", selected: preset_val == "custom", "Custom" }
         }
       }
 
-      div { class: "flex flex-col gap-2.5",
+      div { class: "flex flex-col gap-3",
         for (idx, (freq, label)) in BAND_INFO.iter().enumerate() {
           {
             let gain = (state.effects)().eq_gains[idx];
             let freq_label = format!("{label} ({freq:.0} Hz)");
             rsx! {
               div { class: "flex items-center gap-2",
-                span { class: "text-[11px] text-[#9AA4B2] w-24 shrink-0", "{freq_label}" }
-                input {
-                  r#type: "range",
-                  min: "-12",
-                  max: "12",
-                  step: "0.5",
-                  value: "{gain}",
-                  class: "flex-1 accent-[#38B2AC]",
-                  oninput: move |evt| {
-                    if let Ok(v) = evt.value().parse::<f64>() {
-                      let mut eff = state.effects.write();
-                      eff.eq_gains[idx] = v;
-                      eff.eq_preset = "custom".to_string();
-                    }
+                span { class: "text-[11px] text-muted-foreground w-24 shrink-0", "{freq_label}" }
+                Slider {
+                  value: gain,
+                  min: -12.0,
+                  max: 12.0,
+                  step: 0.5,
+                  class: "flex-1",
+                  track_class: "h-1.5",
+                  range_class: "bg-info",
+                  thumb_class: "h-3.5 w-3.5 border-info",
+                  "aria-label": "{freq_label} gain",
+                  on_value_change: move |v: f64| {
+                    let mut eff = state.effects.write();
+                    eff.eq_gains[idx] = v;
+                    eff.eq_preset = "custom".to_string();
                   },
                 }
-                span { class: "text-[11px] font-mono tabular-nums text-[#ECEFF4] w-12 text-right", "{gain:+.1} dB" }
+                span {
+                  class: "text-[11px] font-mono tabular-nums text-foreground w-12 text-right",
+                  "{gain:+.1} dB"
+                }
               }
             }
           }
@@ -77,8 +87,10 @@ pub fn EqPanel() -> Element {
       }
 
       div { class: "flex gap-2 pt-1",
-        button {
-          class: "flex-1 px-3 py-1.5 rounded text-xs bg-[#252A31] border border-[#2D333C] text-[#9AA4B2] hover:text-[#ECEFF4]",
+        Button {
+          variant: ButtonVariant::Outline,
+          size: ButtonSize::Xs,
+          class: "flex-1 bg-secondary text-muted-foreground hover:text-foreground",
           onclick: move |_| {
             let mut eff = state.effects.write();
             eff.eq_gains = [0.0; 5];
@@ -86,8 +98,10 @@ pub fn EqPanel() -> Element {
           },
           "Reset"
         }
-        button {
-          class: "flex-1 px-3 py-1.5 rounded text-xs font-semibold bg-[#E8A238] text-[#141619] hover:opacity-90",
+        Button {
+          variant: ButtonVariant::Primary,
+          size: ButtonSize::Xs,
+          class: "flex-1 font-semibold",
           onclick: move |_| async move {
             apply_eq(&mut state).await;
           },

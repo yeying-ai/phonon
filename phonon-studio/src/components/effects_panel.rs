@@ -2,37 +2,70 @@
 
 use crate::state::{AppState, transform_audio};
 use dioxus::prelude::*;
+use dioxus_shadcn::{
+  Button, ButtonSize, ButtonVariant, Card, Label, Select, SelectContent, SelectItem, SelectTrigger,
+  Separator, Slider,
+};
 use phonon_core::{
   AudioBuffer, VoiceEnhanceConfig, algorithms, detect_speech_regions, enhance_voice, splice_ranges,
 };
+
+fn enhance_preset_label(preset: &str) -> &'static str {
+  match preset {
+    "noisy_room" => "Noisy Room (Strong STFT Denoise)",
+    "clean_mic" => "Clean Mic (Gentle Polish + Presence)",
+    _ => "Podcast Studio (Balanced Denoise + EQ)",
+  }
+}
+
+fn compress_preset_label(preset: &str) -> &'static str {
+  match preset {
+    "voice" => "Voice",
+    "gentle" => "Gentle",
+    "limiter" => "Limiter",
+    _ => "None",
+  }
+}
 
 #[component]
 pub fn EffectsPanel() -> Element {
   let mut state = use_context::<AppState>();
   let mut enhance_preset = use_signal(|| "podcast_studio".to_string());
   let eff = (state.effects)();
+  let enhance_val = enhance_preset();
+  let compress_val = eff.compress_preset.clone();
 
   rsx! {
     div {
       class: "flex flex-col gap-3",
-      h3 { class: "text-xs font-semibold text-[#ECEFF4]", "Offline DSP & Voice Enhance" }
+      h3 { class: "text-xs font-semibold text-foreground", "Offline DSP & Voice Enhance" }
 
-      // Phase 2: One-Click Local Broadcast Voice Enhancement & Auto Silence Strip
-      div {
-        class: "bg-[#141619] border border-[#E8A238]/40 rounded p-2.5 flex flex-col gap-2",
-        span { class: "text-[11px] font-semibold text-[#E8A238]", "Local Broadcast Voice Enhance" }
-        select {
-          class: "w-full bg-[#252A31] border border-[#2D333C] text-[#ECEFF4] rounded px-2 py-1 text-xs",
-          value: "{enhance_preset}",
-          onchange: move |evt| enhance_preset.set(evt.value()),
-          option { value: "podcast_studio", "Podcast Studio (Balanced Denoise + EQ)" }
-          option { value: "noisy_room", "Noisy Room (Strong STFT Denoise)" }
-          option { value: "clean_mic", "Clean Mic (Gentle Polish + Presence)" }
+      // One-Click Local Broadcast Voice Enhancement & Auto Silence Strip
+      Card {
+        class: "bg-background border-primary/40 p-2.5 flex flex-col gap-2 shadow-none",
+        span { class: "text-[11px] font-semibold text-primary", "Local Broadcast Voice Enhance" }
+
+        Select {
+          value: enhance_val.clone(),
+          on_value_change: move |val: String| enhance_preset.set(val),
+          SelectTrigger {
+            class: "h-8 px-2 py-1 text-xs bg-secondary",
+            "aria-label": "Voice enhance preset",
+            span { class: "truncate", "{enhance_preset_label(&enhance_val)}" }
+          }
+          SelectContent {
+            SelectItem { value: "podcast_studio", class: "text-xs", "Podcast Studio (Balanced Denoise + EQ)" }
+            SelectItem { value: "noisy_room", class: "text-xs", "Noisy Room (Strong STFT Denoise)" }
+            SelectItem { value: "clean_mic", class: "text-xs", "Clean Mic (Gentle Polish + Presence)" }
+          }
         }
+
         div {
           class: "grid grid-cols-2 gap-1.5",
-          button {
-            class: "px-2 py-1.5 rounded text-xs font-semibold bg-[#E8A238] text-[#141619] hover:opacity-90 transition",
+          Button {
+            variant: ButtonVariant::Primary,
+            size: ButtonSize::Xs,
+            class: "font-semibold",
             onclick: move |_| {
               let preset_name = enhance_preset.read().clone();
               async move {
@@ -54,8 +87,10 @@ pub fn EffectsPanel() -> Element {
             },
             "Enhance Voice"
           }
-          button {
-            class: "px-2 py-1.5 rounded text-xs font-medium bg-[#252A31] border border-[#2D333C] text-[#ECEFF4] hover:border-[#38B2AC] transition",
+          Button {
+            variant: ButtonVariant::Outline,
+            size: ButtonSize::Xs,
+            class: "bg-secondary hover:border-info",
             title: "Detect and remove silent pauses longer than 0.45s with smooth 15ms cosine crossfades",
             onclick: move |_| async move {
               transform_audio(
@@ -77,28 +112,30 @@ pub fn EffectsPanel() -> Element {
       }
 
       // Quick Broadcast LUFS Normalize
-      div {
-        class: "bg-[#141619] border border-[#2D333C] rounded p-2.5 flex flex-col gap-2",
+      Card {
+        class: "bg-background p-2.5 flex flex-col gap-2 shadow-none",
         div {
           class: "flex items-center justify-between text-[11px]",
-          span { class: "text-[#9AA4B2]", "BS.1770 LUFS Target" }
-          span { class: "font-mono tabular-nums text-[#38B2AC]", "{eff.lufs_target:.1} LUFS" }
+          Label { class: "text-[11px] font-normal text-muted-foreground", "BS.1770 LUFS Target" }
+          span { class: "font-mono tabular-nums text-info", "{eff.lufs_target:.1} LUFS" }
         }
-        input {
-          r#type: "range",
-          min: "-24",
-          max: "-12",
-          step: "0.5",
-          value: "{eff.lufs_target}",
-          class: "w-full accent-[#38B2AC]",
-          oninput: move |evt| {
-            if let Ok(v) = evt.value().parse::<f32>() {
-              state.effects.write().lufs_target = v;
-            }
+        Slider {
+          value: f64::from(eff.lufs_target),
+          min: -24.0,
+          max: -12.0,
+          step: 0.5,
+          track_class: "h-1.5",
+          range_class: "bg-info",
+          thumb_class: "h-3.5 w-3.5 border-info",
+          "aria-label": "BS.1770 LUFS target",
+          on_value_change: move |v: f64| {
+            state.effects.write().lufs_target = v as f32;
           },
         }
-        button {
-          class: "w-full px-2.5 py-1.5 rounded text-xs font-medium bg-[#252A31] border border-[#38B2AC]/50 text-[#38B2AC] hover:bg-[#38B2AC]/15 transition",
+        Button {
+          variant: ButtonVariant::Outline,
+          size: ButtonSize::Xs,
+          class: "w-full bg-secondary border-info/50 text-info hover:bg-info/15",
           onclick: move |_| async move {
             let target = (state.effects)().lufs_target;
             transform_audio(
@@ -111,64 +148,74 @@ pub fn EffectsPanel() -> Element {
         }
       }
 
-      // Normalize Peak
+      Separator { decorative: true }
+
       SliderControl {
         label: "Peak Normalize",
-        min: "0.1",
-        max: "1.0",
-        step: "0.05",
-        value: format!("{}", eff.normalize_target),
+        min: 0.1,
+        max: 1.0,
+        step: 0.05,
+        value: f64::from(eff.normalize_target),
         display: format!("{:.2}", eff.normalize_target),
-        onchange: move |v: f32| { state.effects.write().normalize_target = v; },
+        onchange: move |v: f64| { state.effects.write().normalize_target = v as f32; },
       }
 
       SliderControl {
         label: "Fade In (s)",
-        min: "0",
-        max: "5",
-        step: "0.1",
-        value: format!("{}", eff.fade_in_secs),
+        min: 0.0,
+        max: 5.0,
+        step: 0.1,
+        value: eff.fade_in_secs,
         display: format!("{:.1}s", eff.fade_in_secs),
-        onchange: move |v: f32| { state.effects.write().fade_in_secs = v as f64; },
+        onchange: move |v: f64| { state.effects.write().fade_in_secs = v; },
       }
 
       SliderControl {
         label: "Fade Out (s)",
-        min: "0",
-        max: "5",
-        step: "0.1",
-        value: format!("{}", eff.fade_out_secs),
+        min: 0.0,
+        max: 5.0,
+        step: 0.1,
+        value: eff.fade_out_secs,
         display: format!("{:.1}s", eff.fade_out_secs),
-        onchange: move |v: f32| { state.effects.write().fade_out_secs = v as f64; },
+        onchange: move |v: f64| { state.effects.write().fade_out_secs = v; },
       }
 
       SliderControl {
         label: "Speed",
-        min: "0.25",
-        max: "4.0",
-        step: "0.05",
-        value: format!("{}", eff.speed_factor),
+        min: 0.25,
+        max: 4.0,
+        step: 0.05,
+        value: eff.speed_factor,
         display: format!("{:.2}x", eff.speed_factor),
-        onchange: move |v: f32| { state.effects.write().speed_factor = v as f64; },
+        onchange: move |v: f64| { state.effects.write().speed_factor = v; },
       }
 
       div {
-        label { class: "text-[11px] text-[#9AA4B2] block mb-1", "Compressor" }
-        select {
-          class: "w-full bg-[#252A31] border border-[#2D333C] text-[#ECEFF4] rounded px-2 py-1.5 text-xs",
-          value: "{eff.compress_preset}",
-          onchange: move |evt| {
-            state.effects.write().compress_preset = evt.value();
+        class: "flex flex-col gap-1",
+        Label { class: "text-[11px] font-normal text-muted-foreground", "Compressor" }
+        Select {
+          value: compress_val.clone(),
+          on_value_change: move |val: String| {
+            state.effects.write().compress_preset = val;
           },
-          option { value: "none", "None" }
-          option { value: "voice", "Voice" }
-          option { value: "gentle", "Gentle" }
-          option { value: "limiter", "Limiter" }
+          SelectTrigger {
+            class: "h-8 px-2 py-1 text-xs bg-secondary",
+            "aria-label": "Compressor preset",
+            span { class: "truncate", "{compress_preset_label(&compress_val)}" }
+          }
+          SelectContent {
+            SelectItem { value: "none", class: "text-xs", "None" }
+            SelectItem { value: "voice", class: "text-xs", "Voice" }
+            SelectItem { value: "gentle", class: "text-xs", "Gentle" }
+            SelectItem { value: "limiter", class: "text-xs", "Limiter" }
+          }
         }
       }
 
-      button {
-        class: "w-full px-3 py-2 rounded text-xs font-semibold bg-[#E8A238] text-[#141619] hover:opacity-90 transition mt-1",
+      Button {
+        variant: ButtonVariant::Primary,
+        size: ButtonSize::Sm,
+        class: "w-full text-xs font-semibold mt-1",
         onclick: move |_| async move {
           apply_effects(&mut state).await;
         },
@@ -210,32 +257,29 @@ async fn apply_effects(state: &mut AppState) {
 #[component]
 fn SliderControl(
   label: &'static str,
-  min: &'static str,
-  max: &'static str,
-  step: &'static str,
-  value: String,
+  min: f64,
+  max: f64,
+  step: f64,
+  value: f64,
   display: String,
-  onchange: EventHandler<f32>,
+  onchange: EventHandler<f64>,
 ) -> Element {
   rsx! {
-    div { class: "flex flex-col gap-1",
+    div { class: "flex flex-col gap-1.5",
       div {
         class: "flex items-center justify-between text-[11px]",
-        label { class: "text-[#9AA4B2]", "{label}" }
-        span { class: "font-mono tabular-nums text-[#ECEFF4]", "{display}" }
+        Label { class: "text-[11px] font-normal text-muted-foreground", "{label}" }
+        span { class: "font-mono tabular-nums text-foreground", "{display}" }
       }
-      input {
-        r#type: "range",
-        min: "{min}",
-        max: "{max}",
-        step: "{step}",
-        value: "{value}",
-        class: "w-full accent-[#E8A238]",
-        oninput: move |evt| {
-          if let Ok(v) = evt.value().parse::<f32>() {
-            onchange.call(v);
-          }
-        },
+      Slider {
+        value,
+        min,
+        max,
+        step,
+        track_class: "h-1.5",
+        thumb_class: "h-3.5 w-3.5",
+        "aria-label": label,
+        on_value_change: move |v: f64| onchange.call(v),
       }
     }
   }

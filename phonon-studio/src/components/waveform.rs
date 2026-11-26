@@ -2,43 +2,47 @@
 
 use crate::state::{AppState, VizMode};
 use dioxus::prelude::*;
+use dioxus_shadcn::{Card, Tabs, TabsList, TabsTrigger};
 
 #[component]
 pub fn WaveformView() -> Element {
-  let state = use_context::<AppState>();
+  let mut state = use_context::<AppState>();
   let Some(info) = (state.display_info)() else {
     return rsx! {};
   };
+  let viz_key = match (state.viz_mode)() {
+    VizMode::Waveform => "waveform",
+    VizMode::Spectrum => "spectrum",
+  };
 
   rsx! {
-    div {
-      class: "w-full max-w-5xl bg-[#1C1F24] border border-[#2D333C] rounded-md p-4",
+    Card {
+      class: "w-full max-w-5xl p-4 shadow-none",
 
       div {
-        class: "flex gap-1.5 mb-3",
-        button {
-          class: if (state.viz_mode)() == VizMode::Waveform {
-            "px-2.5 py-1 rounded text-xs font-medium bg-[#38B2AC] text-[#141619]"
-          } else {
-            "px-2.5 py-1 rounded text-xs font-medium bg-[#252A31] text-[#9AA4B2] hover:text-[#ECEFF4]"
+        class: "mb-3",
+        Tabs {
+          value: viz_key.to_string(),
+          on_value_change: move |next: String| {
+            match next.as_str() {
+              "spectrum" => state.viz_mode.set(VizMode::Spectrum),
+              _ => state.viz_mode.set(VizMode::Waveform),
+            }
           },
-          onclick: {
-            let mut viz = state.viz_mode;
-            move |_| viz.set(VizMode::Waveform)
-          },
-          "Waveform"
-        }
-        button {
-          class: if (state.viz_mode)() == VizMode::Spectrum {
-            "px-2.5 py-1 rounded text-xs font-medium bg-[#E8A238] text-[#141619]"
-          } else {
-            "px-2.5 py-1 rounded text-xs font-medium bg-[#252A31] text-[#9AA4B2] hover:text-[#ECEFF4]"
-          },
-          onclick: {
-            let mut viz = state.viz_mode;
-            move |_| viz.set(VizMode::Spectrum)
-          },
-          "FFT Spectrum"
+          TabsList {
+            class: "h-8 p-0.5 bg-background border border-border",
+            "aria-label": "Visualization mode",
+            TabsTrigger {
+              value: "waveform",
+              class: "h-7 px-2.5 py-1 text-xs",
+              "Waveform"
+            }
+            TabsTrigger {
+              value: "spectrum",
+              class: "h-7 px-2.5 py-1 text-xs",
+              "FFT Spectrum"
+            }
+          }
         }
       }
 
@@ -51,7 +55,7 @@ pub fn WaveformView() -> Element {
             preserve_aspect_ratio: "none",
             path {
               d: "{info.waveform_path}",
-              class: "stroke-[#38B2AC] fill-[#38B2AC]/80",
+              class: "stroke-info fill-info/80",
               stroke_width: "1",
               vector_effect: "non-scaling-stroke"
             }

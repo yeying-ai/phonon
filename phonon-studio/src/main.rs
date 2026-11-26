@@ -11,6 +11,10 @@ use components::{
 use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 use dioxus_logger::tracing;
+use dioxus_shadcn::{
+  DensityProvider, SonnerClose, SonnerContent, SonnerIcon, SonnerPlacement, SonnerTitle,
+  SonnerToast, SonnerViewport, UiDensity,
+};
 use project::StudioProject;
 use state::{AppState, WorkspaceTab, load_audio};
 use std::collections::HashMap;
@@ -52,27 +56,60 @@ fn App() -> Element {
 
   rsx! {
     document::Stylesheet { href: TAILWIND_CSS }
-    div {
-      class: "flex flex-col h-dvh bg-[#141619] text-[#ECEFF4] overflow-hidden",
+    DensityProvider {
+      density: UiDensity::Compact,
+      div {
+        class: "dark flex flex-col h-dvh bg-background text-foreground overflow-hidden",
 
-      // Global drag-and-drop: supports both .json scripts and audio files
-      ondragover: move |evt| { evt.prevent_default(); },
-      ondrop: move |evt| {
-        evt.prevent_default();
-        let mut s = state;
-        async move {
-          handle_drop(&mut s, evt).await;
+        // Global drag-and-drop: supports both .json scripts and audio files
+        ondragover: move |evt| { evt.prevent_default(); },
+        ondrop: move |evt| {
+          evt.prevent_default();
+          let mut s = state;
+          async move {
+            handle_drop(&mut s, evt).await;
+          }
+        },
+
+        Header {}
+
+        match (state.active_tab)() {
+          WorkspaceTab::PodcastStudio => rsx! { PodcastStudioView {} },
+          WorkspaceTab::AudioLab => rsx! { AudioLabView {} },
         }
-      },
 
-      Header {}
+        Transport {}
 
-      match (state.active_tab)() {
-        WorkspaceTab::PodcastStudio => rsx! { PodcastStudioView {} },
-        WorkspaceTab::AudioLab => rsx! { AudioLabView {} },
+        SonnerViewport {
+          placement: SonnerPlacement::BottomRight,
+          class: "bottom-14",
+          for toast in state.toasts.read().items.iter().cloned() {
+            {
+              let dismiss_id = toast.id.clone();
+              let close_id = toast.id.clone();
+              rsx! {
+                SonnerToast {
+                  key: "{toast.id}",
+                  variant: toast.variant,
+                  duration_ms: toast.duration_ms,
+                  class: "p-3 text-xs",
+                  on_dismiss: move |_| state.dismiss_toast(&dismiss_id),
+                  SonnerIcon { variant: toast.variant }
+                  SonnerContent {
+                    SonnerTitle { class: "text-xs font-medium leading-snug", "{toast.title}" }
+                  }
+                  if toast.dismissible {
+                    SonnerClose {
+                      on_dismiss: move |_| state.dismiss_toast(&close_id),
+                      "×"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
-
-      Transport {}
     }
   }
 }
