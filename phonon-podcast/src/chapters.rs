@@ -249,7 +249,13 @@ pub fn assign_chapter_times(script: &PodcastScript, segment_spans: &[(f64, f64)]
     chapters.push(Chapter::new(title, start));
   }
 
-  if let (Some(last), Some(&(_, end))) = (chapters.last_mut(), segment_spans.last()) {
+  let matched_count = script.segments.len().min(segment_spans.len());
+  if let (Some(last), Some(&(_, end))) = (
+    chapters.last_mut(),
+    matched_count
+      .checked_sub(1)
+      .and_then(|i| segment_spans.get(i)),
+  ) {
     last.end = Some(end);
   }
 

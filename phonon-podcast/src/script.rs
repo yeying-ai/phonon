@@ -83,6 +83,43 @@ impl PodcastScript {
       }
     }
 
+    let cfg = &self.config;
+    if cfg.output_sample_rate == 0 {
+      return Err(crate::PodcastError::Script(
+        "output_sample_rate must be > 0".to_string(),
+      ));
+    }
+    if cfg.output_channels == 0 {
+      return Err(crate::PodcastError::Script(
+        "output_channels must be > 0".to_string(),
+      ));
+    }
+    for (name, val) in [
+      (
+        "pause_between_segments_secs",
+        cfg.pause_between_segments_secs,
+      ),
+      ("crossfade_secs", cfg.crossfade_secs),
+      ("fade_in_secs", cfg.fade_in_secs),
+      ("fade_out_secs", cfg.fade_out_secs),
+    ] {
+      if !val.is_finite() || val < 0.0 {
+        return Err(crate::PodcastError::Script(format!(
+          "{name} must be finite and non-negative"
+        )));
+      }
+    }
+    if !cfg.bgm_volume.is_finite() || cfg.bgm_volume < 0.0 {
+      return Err(crate::PodcastError::Script(
+        "bgm_volume must be finite and non-negative".to_string(),
+      ));
+    }
+    if !cfg.normalize_target.is_finite() || cfg.normalize_target < 0.0 {
+      return Err(crate::PodcastError::Script(
+        "normalize_target must be finite and non-negative".to_string(),
+      ));
+    }
+
     Ok(())
   }
 

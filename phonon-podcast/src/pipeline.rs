@@ -121,9 +121,9 @@ impl<T: TtsProvider, S: SoundGenProvider> PodcastPipeline<T, S> {
   ) -> Result<(), PodcastError> {
     let buffer = self.generate(script).await?;
     let output = output.as_ref().to_path_buf();
-    tokio::task::spawn_blocking(move || phonon_wav::write_wav(output, &buffer))
+    tokio::task::spawn_blocking(move || phonon_io::write_audio(output, &buffer))
       .await
-      .map_err(|e| PodcastError::Processing(format!("WAV writer task failed: {e}")))?
+      .map_err(|e| PodcastError::Processing(format!("Audio writer task failed: {e}")))?
       .map_err(|e| PodcastError::Io(e.to_string()))?;
     Ok(())
   }
@@ -143,14 +143,18 @@ impl<T: TtsProvider, S: SoundGenProvider> PodcastPipeline<T, S> {
       ))
     })?;
 
-    let voice = script
+    let mut voice = script
       .speakers
       .get(&segment.speaker)
-      .ok_or_else(|| PodcastError::Script(format!("Unknown speaker: {}", segment.speaker)))?;
+      .ok_or_else(|| PodcastError::Script(format!("Unknown speaker: {}", segment.speaker)))?
+      .clone();
+    if let Some(ref lang) = segment.language {
+      voice.language = Some(lang.clone());
+    }
 
     let buffer = self
       .tts
-      .synthesize(&segment.text, voice)
+      .synthesize(&segment.text, &voice)
       .await
       .map_err(|e| PodcastError::Tts(e.to_string()))?;
 
@@ -393,9 +397,13 @@ fn level_segments(segments: &mut [AudioBuffer]) {
     .flatten()
     .map(|(lufs, peak)| lufs + SEGMENT_TRUE_PEAK_DBTP - peak)
     .fold(f32::INFINITY, f32::min);
+  const MAX_SEGMENT_GAIN_DB: f32 = 24.0;
   for (buf, level) in segments.iter_mut().zip(measured) {
     match level {
-      Some((lufs, _)) => phonon_core::adjust_volume_db(buf, target - lufs),
+      Some((lufs, _)) => {
+        let gain_db = (target - lufs).min(MAX_SEGMENT_GAIN_DB);
+        phonon_core::adjust_volume_db(buf, gain_db);
+      }
       None => phonon_core::normalize(buf, 0.9),
     }
   }

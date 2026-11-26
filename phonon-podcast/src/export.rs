@@ -224,7 +224,23 @@ fn entries_from_script(script: &PodcastScript, segment_spans: &[(f64, f64)]) -> 
     } else {
       MAX_CUE_CHARS
     };
-    let cues = phonon_ai::tts::split_text(&seg.text, max_chars);
+    let raw_cues = phonon_ai::tts::split_text(&seg.text, max_chars);
+    // Merge punctuation-only trailing fragments into the preceding cue so SRT
+    // never emits a standalone "。" entry.
+    let mut cues: Vec<String> = Vec::with_capacity(raw_cues.len());
+    for cue in raw_cues {
+      let trimmed = cue.trim();
+      if trimmed.is_empty() {
+        continue;
+      }
+      if letter_count(trimmed) == 0
+        && let Some(prev) = cues.last_mut()
+      {
+        prev.push_str(trimmed);
+        continue;
+      }
+      cues.push(trimmed.to_string());
+    }
     let weights: Vec<usize> = cues.iter().map(|c| letter_count(c).max(1)).collect();
     let total = weights.iter().sum::<usize>().max(1) as f64;
     let mut done = 0;
@@ -234,7 +250,7 @@ fn entries_from_script(script: &PodcastScript, segment_spans: &[(f64, f64)]) -> 
       entries.push(SubtitleEntry {
         start: cue_start,
         end: start + (end - start) * done as f64 / total,
-        text: cue.trim().to_string(),
+        text: cue.clone(),
       });
     }
   }

@@ -425,7 +425,11 @@ enum PodcastAction {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-  tracing_subscriber::fmt::init();
+  // Always route tracing logs to stderr so machine-readable stdout (`stt --json`)
+  // stays valid even when RUST_LOG is enabled.
+  tracing_subscriber::fmt()
+    .with_writer(std::io::stderr)
+    .init();
 
   let cli = Cli::parse();
 
@@ -750,6 +754,8 @@ async fn main() -> anyhow::Result<()> {
           "Normalized to {:.2} LUFS / true peak {:.2} dBTP -> {:?}",
           after.integrated_lufs, after.true_peak_dbtp, out_path
         );
+      } else if target.is_some() {
+        anyhow::bail!("--output <PATH> is required when --target is set");
       }
     }
     Commands::TagMp3 {
