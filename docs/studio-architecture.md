@@ -17,11 +17,10 @@ Phonon Studio is positioned as a **local-first, multi-vendor BYOK AI Podcast & V
   5. Show & Broadcast Mastering controls: segment pause, crossfade, BGM/Intro/Outro file selection, relative BGM level, fade in/out, and optional BS.1770-4 `target_lufs` mastering (`-16` Apple Podcasts / `-14` Spotify / `-18` Mono / `-23` EBU R128).
   6. Episode Inspector: Waveform + BS.1770-4 Loudness & True-Peak meter, click-to-seek Chapters, live SRT Subtitle preview, PodcastTags + Cover art editor, and one-click export (MP3 w/ ID3 chapters & cover, WAV, FLAC, OGG, SRT, Chapters TXT).
   7. Audio Lab bug fixes: live plugin parameter sync to `AudioPlayer`, plugin sync on lazy player creation, real-time volume slider & seek bar, fix paused-track switch resume bug, and optional baking of active plugin chain during export.
-- **Phase 2 (Next milestone — intentionally deferred)**:
-  - Word-aligned text-based audio cutting for recorded human speech (STT timestamps → non-destructive trim/crossfade segments).
-  - Local ONNX neural voice enhancement / denoise (`ort` + DeepFilterNet3).
-  - Local MCP bridge exposing the active `StudioProject` to external LLM agents.
-  - **Re-evaluation trigger**: Only start Phase 2 once Phase 1 passes end-to-end daily podcast authoring (draft → per-segment preview → broadcast export) without falling back to CLI.
+- **Phase 2 (Implemented — v0.9.1)**:
+  - **Recorded Voice + Text-Driven Audio Cutting ("改文本即剪音频")**: Attach real voice recordings to any segment (`SegmentMediaOverride`), align into clickable word/clause/clip spans via `phonon-ai` STT (with automatic offline 20ms RMS VAD fallback `detect_speech_regions`), auto-tag Chinese/English fillers, click any chip to cut/restore non-destructively via `phonon_core::splice_ranges` (15ms raised-cosine micro-crossfade), and mix human + AI TTS segments in the same episode.
+  - **Local Broadcast Voice Enhancement**: Pure-Rust `phonon_core::enhance_voice` (80Hz high-pass + minimum-statistics STFT Wiener spectral denoiser + broadcast vocal presence EQ + compression + BS.1770 LUFS mastering) with zero external C++ runtime or model downloads. Re-evaluation trigger for optional `ort` DeepFilterNet3 feature: if non-stationary noise (café chatter / keyboard clicks) leaves SNR degradation > 6 dB on real recordings.
+  - **Local MCP Live Co-Editing**: 7 new `phonon-mcp` tools (`audio_enhance_voice`, `audio_splice`, `studio_get_project`, `studio_edit_segment`, `studio_add_segment`, `studio_delete_segment`, `studio_set_mastering`) using atomic temp+rename writes inside `PHONON_MCP_ROOT`, paired with Studio's 500ms live-sync watcher that hot-reloads external Agent edits onto Undo history.
 
 ## 2. Minimal Backend Seams
 

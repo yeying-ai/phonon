@@ -221,6 +221,41 @@ Lanczos-windowed sinc resample to `target_rate` Hz.
 | `handle` | UUID | yes |
 | `target_rate` | integer | yes |
 
+### `audio_enhance_voice`
+
+Pure-Rust local broadcast voice enhancement (80 Hz high-pass, adaptive STFT spectral denoise, broadcast vocal presence EQ, compression, and BS.1770-4 LUFS mastering).
+
+| Field | Type | Required | Default |
+|---|---|---|---|
+| `handle` | UUID | yes | |
+| `preset` | `"podcast_studio"` \| `"noisy_room"` \| `"clean_mic"` | no | `"podcast_studio"` |
+| `denoise_strength` | number 0–1 | no | preset default |
+| `target_lufs` | number `-60..-5` | no | `-16.0` |
+
+### `audio_splice`
+
+Non-destructively keep only the specified `[start_secs, end_secs]` time ranges and join them with raised-cosine micro-crossfades.
+
+| Field | Type | Required | Default |
+|---|---|---|---|
+| `handle` | UUID | yes | |
+| `keep_ranges` | array of `[start, end]` pairs | yes | |
+| `crossfade_secs` | number `>= 0` | no | `0.015` |
+
+---
+
+## Studio Co-Editing — atomic `.phonon.json` tools (confined to `PHONON_MCP_ROOT`)
+
+All `studio_*` tools validate paths against `PHONON_MCP_ROOT` and persist via atomic same-directory temp file + `rename` so a running **Phonon Studio** instance with MCP Live Sync enabled hot-reloads changes automatically (with Undo history).
+
+| Tool | Purpose | Key Arguments |
+|---|---|---|
+| `studio_get_project` | Inspect title, speakers, numbered segments, overrides & mastering config | `path` |
+| `studio_edit_segment` | Edit segment text/speaker/chapter/language, toggle `enhance_voice`, or cut filler spans | `path`, `index`, `text?`, `speaker?`, `chapter?`, `language?`, `enhance_voice?`, `delete_filler_spans?` |
+| `studio_add_segment` | Insert a new dialogue segment | `path`, `speaker`, `text`, `after_index?`, `chapter?`, `language?` |
+| `studio_delete_segment` | Delete a segment (keeps at least 1) | `path`, `index` |
+| `studio_set_mastering` | Adjust `target_lufs`, `bgm_volume`, pause, crossfade, fade in/out | `path`, `target_lufs?`, `bgm_volume?`, `pause_between_segments_secs?`, `crossfade_secs?`, `fade_in_secs?`, `fade_out_secs?` |
+
 ---
 
 ## Measure — read-only
