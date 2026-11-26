@@ -10,7 +10,10 @@ const LANES: usize = 4;
 /// Index where the scalar loop takes over: after the 4-wide chunks on
 /// architectures with a SIMD path, or 0 (the whole slice) elsewhere.
 const fn scalar_start(len: usize) -> usize {
-  if cfg!(any(target_arch = "aarch64", target_arch = "x86_64")) {
+  if cfg!(any(
+    all(target_arch = "aarch64", target_feature = "neon"),
+    all(target_arch = "x86_64", target_feature = "sse2")
+  )) {
     len - len % LANES
   } else {
     0
@@ -25,7 +28,7 @@ pub(crate) fn simd_mul_clamp(samples: &mut [f32], gain: f32) {
   let len = samples.len();
   let chunks = len / LANES;
 
-  #[cfg(target_arch = "aarch64")]
+  #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
   {
     use std::arch::aarch64::*;
     // SAFETY: aarch64 NEON is always available on Apple Silicon / ARMv8+.
@@ -45,7 +48,7 @@ pub(crate) fn simd_mul_clamp(samples: &mut [f32], gain: f32) {
     }
   }
 
-  #[cfg(target_arch = "x86_64")]
+  #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
   {
     use std::arch::x86_64::*;
     // SAFETY: SSE is baseline on x86_64.
@@ -65,7 +68,10 @@ pub(crate) fn simd_mul_clamp(samples: &mut [f32], gain: f32) {
     }
   }
 
-  #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+  #[cfg(not(any(
+    all(target_arch = "aarch64", target_feature = "neon"),
+    all(target_arch = "x86_64", target_feature = "sse2")
+  )))]
   let _ = chunks; // suppress unused warning
 
   // Scalar remainder
@@ -83,7 +89,7 @@ pub(crate) fn simd_mul(samples: &mut [f32], gain: f32) {
   let len = samples.len();
   let chunks = len / LANES;
 
-  #[cfg(target_arch = "aarch64")]
+  #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
   {
     use std::arch::aarch64::*;
     unsafe {
@@ -97,7 +103,7 @@ pub(crate) fn simd_mul(samples: &mut [f32], gain: f32) {
     }
   }
 
-  #[cfg(target_arch = "x86_64")]
+  #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
   {
     use std::arch::x86_64::*;
     unsafe {
@@ -111,7 +117,10 @@ pub(crate) fn simd_mul(samples: &mut [f32], gain: f32) {
     }
   }
 
-  #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+  #[cfg(not(any(
+    all(target_arch = "aarch64", target_feature = "neon"),
+    all(target_arch = "x86_64", target_feature = "sse2")
+  )))]
   let _ = chunks;
 
   let start = scalar_start(len);
@@ -127,13 +136,21 @@ pub(crate) fn simd_mul(samples: &mut [f32], gain: f32) {
 ///
 /// `a`, `b`, and `out` must all have the same length.
 pub(crate) fn simd_add_clamp(a: &[f32], b: &[f32], out: &mut [f32]) {
-  debug_assert_eq!(a.len(), b.len());
-  debug_assert_eq!(a.len(), out.len());
+  assert_eq!(
+    a.len(),
+    b.len(),
+    "simd_add_clamp: input slice length mismatch"
+  );
+  assert_eq!(
+    a.len(),
+    out.len(),
+    "simd_add_clamp: output slice length mismatch"
+  );
 
   let len = a.len();
   let chunks = len / LANES;
 
-  #[cfg(target_arch = "aarch64")]
+  #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
   {
     use std::arch::aarch64::*;
     unsafe {
@@ -153,7 +170,7 @@ pub(crate) fn simd_add_clamp(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
   }
 
-  #[cfg(target_arch = "x86_64")]
+  #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
   {
     use std::arch::x86_64::*;
     unsafe {
@@ -173,7 +190,10 @@ pub(crate) fn simd_add_clamp(a: &[f32], b: &[f32], out: &mut [f32]) {
     }
   }
 
-  #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+  #[cfg(not(any(
+    all(target_arch = "aarch64", target_feature = "neon"),
+    all(target_arch = "x86_64", target_feature = "sse2")
+  )))]
   let _ = chunks;
 
   let start = scalar_start(len);
@@ -194,7 +214,7 @@ pub(crate) fn simd_max_abs(samples: &[f32]) -> f32 {
   #[allow(unused_assignments)]
   let mut global_max = 0.0f32;
 
-  #[cfg(target_arch = "aarch64")]
+  #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
   {
     use std::arch::aarch64::*;
     unsafe {
@@ -210,7 +230,7 @@ pub(crate) fn simd_max_abs(samples: &[f32]) -> f32 {
     }
   }
 
-  #[cfg(target_arch = "x86_64")]
+  #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
   {
     use std::arch::x86_64::*;
     unsafe {
@@ -223,8 +243,8 @@ pub(crate) fn simd_max_abs(samples: &[f32]) -> f32 {
         let vabs = _mm_and_ps(v, abs_mask);
         vmax_acc = _mm_max_ps(vmax_acc, vabs);
       }
-      // Horizontal max: reduce 4 lanes to scalar.
-      let shuf1 = _mm_movehdup_ps(vmax_acc); // [1,1,3,3]
+      // Horizontal max: reduce 4 lanes to scalar using baseline SSE only.
+      let shuf1 = _mm_shuffle_ps(vmax_acc, vmax_acc, 0b_11_11_01_01); // [1,1,3,3]
       let max1 = _mm_max_ps(vmax_acc, shuf1);
       let shuf2 = _mm_movehl_ps(max1, max1);
       let max2 = _mm_max_ss(max1, shuf2);
@@ -232,7 +252,10 @@ pub(crate) fn simd_max_abs(samples: &[f32]) -> f32 {
     }
   }
 
-  #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+  #[cfg(not(any(
+    all(target_arch = "aarch64", target_feature = "neon"),
+    all(target_arch = "x86_64", target_feature = "sse2")
+  )))]
   let _ = chunks;
 
   // Scalar remainder
@@ -261,7 +284,7 @@ pub(crate) fn simd_sum_sq(samples: &[f32]) -> f64 {
   #[allow(unused_assignments)]
   let mut sum: f64 = 0.0;
 
-  #[cfg(target_arch = "aarch64")]
+  #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
   {
     use std::arch::aarch64::*;
     unsafe {
@@ -280,7 +303,7 @@ pub(crate) fn simd_sum_sq(samples: &[f32]) -> f64 {
     }
   }
 
-  #[cfg(target_arch = "x86_64")]
+  #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
   {
     use std::arch::x86_64::*;
     unsafe {
@@ -302,7 +325,10 @@ pub(crate) fn simd_sum_sq(samples: &[f32]) -> f64 {
     }
   }
 
-  #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+  #[cfg(not(any(
+    all(target_arch = "aarch64", target_feature = "neon"),
+    all(target_arch = "x86_64", target_feature = "sse2")
+  )))]
   let _ = chunks;
 
   // Scalar remainder.
@@ -326,7 +352,7 @@ pub(crate) fn simd_mul_interleaved_pair(samples: &mut [f32], g_even: f32, g_odd:
   let len = samples.len();
   let chunks = len / LANES;
 
-  #[cfg(target_arch = "aarch64")]
+  #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
   {
     use std::arch::aarch64::*;
     unsafe {
@@ -341,7 +367,7 @@ pub(crate) fn simd_mul_interleaved_pair(samples: &mut [f32], g_even: f32, g_odd:
     }
   }
 
-  #[cfg(target_arch = "x86_64")]
+  #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
   {
     use std::arch::x86_64::*;
     unsafe {
@@ -356,7 +382,10 @@ pub(crate) fn simd_mul_interleaved_pair(samples: &mut [f32], g_even: f32, g_odd:
     }
   }
 
-  #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+  #[cfg(not(any(
+    all(target_arch = "aarch64", target_feature = "neon"),
+    all(target_arch = "x86_64", target_feature = "sse2")
+  )))]
   let _ = chunks;
 
   // Scalar tail — `start` is a multiple of LANES (even), so `start + i`
@@ -378,7 +407,7 @@ pub(crate) fn simd_mul_ramp(samples: &mut [f32], start_gain: f32, gain_step: f32
   let len = samples.len();
   let chunks = len / LANES;
 
-  #[cfg(target_arch = "aarch64")]
+  #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
   {
     use std::arch::aarch64::*;
     unsafe {
@@ -400,7 +429,7 @@ pub(crate) fn simd_mul_ramp(samples: &mut [f32], start_gain: f32, gain_step: f32
     }
   }
 
-  #[cfg(target_arch = "x86_64")]
+  #[cfg(all(target_arch = "x86_64", target_feature = "sse2"))]
   {
     use std::arch::x86_64::*;
     unsafe {
@@ -423,7 +452,10 @@ pub(crate) fn simd_mul_ramp(samples: &mut [f32], start_gain: f32, gain_step: f32
     }
   }
 
-  #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
+  #[cfg(not(any(
+    all(target_arch = "aarch64", target_feature = "neon"),
+    all(target_arch = "x86_64", target_feature = "sse2")
+  )))]
   let _ = chunks;
 
   // Scalar remainder
