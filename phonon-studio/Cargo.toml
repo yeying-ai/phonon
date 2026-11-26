@@ -6,18 +6,25 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "Desktop GUI for the Phonon audio engine — Dioxus-based studio with effect chain, EQ, spectrum and plugin browser"
-keywords = ["audio", "gui", "dioxus", "phonon"]
+description = "Desktop AI Podcast & Voice Studio built on the Phonon audio engine"
+keywords = ["audio", "gui", "dioxus", "podcast", "phonon"]
 categories = ["multimedia::audio", "gui"]
 publish = false
 
 [dependencies]
+blake3.workspace = true
 dioxus.workspace = true
 dioxus-logger.workspace = true
-phonon-wav.workspace = true
-phonon-io = { workspace = true, features = ["aac"] }
+phonon-ai.workspace = true
 phonon-core.workspace = true
 phonon-engine.workspace = true
+phonon-io = { workspace = true, features = ["aac"] }
+phonon-podcast.workspace = true
+phonon-wav.workspace = true
 rfd.workspace = true
-tokio = { workspace = true, features = ["rt"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time"] }
 
+[dev-dependencies]
+tempfile.workspace = true

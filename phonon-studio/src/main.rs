@@ -1,7 +1,9 @@
 #![allow(non_snake_case)]
 
 mod components;
+mod project;
 mod state;
+mod studio_ops;
 
 use dioxus::html::HasFileData;
 use dioxus::prelude::*;
