@@ -1,18 +1,17 @@
 #![allow(non_snake_case)]
 
+use crate::state::{ActivePluginState, AppState};
+use crate::studio_ops::instantiate_active_plugins;
 use dioxus::prelude::*;
 
-use crate::state::{ActivePluginState, AppState};
-
-/// Plugin browser sidebar panel.
+/// Plugin browser sidebar panel for Audio Lab.
 ///
-/// Lists available plugins from the registry and shows the active
-/// plugin chain with parameter sliders.
+/// Syncs parameter changes live to the active `AudioPlayer` effect chain and
+/// ensures plugins added before pressing Play are preserved.
 #[component]
 pub fn PluginBrowser() -> Element {
   let mut state = use_context::<AppState>();
 
-  // Collect available plugin info from the registry.
   let registry = (state.plugin_registry)();
   let mut available: Vec<(&str, String)> = registry
     .list_ids()
@@ -31,87 +30,102 @@ pub fn PluginBrowser() -> Element {
 
   rsx! {
     div {
-      // ── Available Plugins ─────────────────────────────
-      h3 {
-        class: "text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3",
-        "Available Plugins"
-      }
+      class: "flex flex-col gap-4",
 
-      div { class: "flex flex-col gap-1 mb-4",
-        for (id, name) in available.iter() {
-          div {
-            class: "flex items-center justify-between bg-neutral-700 rounded px-2 py-1",
-            span { class: "text-sm text-gray-200", "{name}" }
-            button {
-              class: "text-xs bg-emerald-600 text-white px-2 py-0.5 rounded hover:opacity-90",
-              onclick: {
-                let plugin_id = id.to_string();
-                move |_| {
-                  add_plugin(&mut state, &plugin_id);
-                }
-              },
-              "Add"
-            }
-          }
-        }
-      }
-
-      // ── Active Chain ──────────────────────────────────
-      h3 {
-        class: "text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3",
-        "Active Chain ({active_plugins.len()})"
-      }
-
-      if active_plugins.is_empty() {
-        p { class: "text-xs text-gray-500", "No plugins in the chain." }
-      } else {
-        div { class: "flex flex-col gap-3 mb-3",
-          for (idx, plugin) in active_plugins.iter().enumerate() {
+      // Available Plugins
+      div {
+        h3 { class: "text-xs font-semibold text-[#ECEFF4] mb-2.5", "Available DSP Plugins" }
+        div { class: "flex flex-col gap-1.5",
+          for (id, name) in available.iter() {
             div {
-              class: "bg-neutral-700 rounded p-2",
-              div {
-                class: "text-sm text-gray-200 font-medium mb-1",
-                "{idx + 1}. {plugin.name}"
-              }
-              for (pname, val, min, max, _default) in plugin.params.iter() {
-                div { class: "mb-1",
-                  label { class: "text-xs text-gray-500 block", "{pname}" }
-                  input {
-                    r#type: "range",
-                    min: "{min}",
-                    max: "{max}",
-                    step: "0.01",
-                    value: "{val}",
-                    class: "w-full accent-emerald-500",
-                    oninput: {
-                      let param_name = pname.clone();
-                      move |evt| {
-                        if let Ok(v) = evt.value().parse::<f32>() {
-                          update_plugin_param(&mut state, idx, &param_name, v);
-                        }
-                      }
-                    },
-                  }
-                  span { class: "text-xs text-gray-400", "{val:.2}" }
-                }
+              class: "flex items-center justify-between bg-[#141619] border border-[#2D333C] rounded px-2.5 py-1.5",
+              span { class: "text-xs text-[#ECEFF4]", "{name}" }
+              button {
+                class: "text-[11px] bg-[#252A31] border border-[#2D333C] text-[#ECEFF4] px-2 py-0.5 rounded hover:border-[#38B2AC]",
+                onclick: {
+                  let plugin_id = id.to_string();
+                  move |_| add_plugin(&mut state, &plugin_id)
+                },
+                "+ Add"
               }
             }
           }
         }
+      }
 
-        button {
-          class: "w-full px-3 py-2 rounded-sm bg-red-600 text-white font-medium hover:opacity-90 transition",
-          onclick: move |_| {
-            clear_all_plugins(&mut state);
-          },
-          "Remove All"
+      div { class: "h-px bg-[#2D333C]" }
+
+      // Active Chain
+      div {
+        h3 { class: "text-xs font-semibold text-[#ECEFF4] mb-2.5", "Active Chain ({active_plugins.len()})" }
+
+        if active_plugins.is_empty() {
+          p { class: "text-xs text-[#647080]", "No plugins in the chain. Add one above to process playback and export." }
+        } else {
+          div { class: "flex flex-col gap-2.5 mb-3",
+            for (idx, plugin) in active_plugins.iter().enumerate() {
+              div {
+                key: "plugin-{idx}-{plugin.id}",
+                class: "bg-[#141619] border border-[#2D333C] rounded p-2.5 flex flex-col gap-2",
+                div {
+                  class: "flex items-center justify-between",
+                  span { class: "text-xs text-[#ECEFF4] font-medium", "{idx + 1}. {plugin.name}" }
+                  button {
+                    class: "text-[11px] text-[#647080] hover:text-[#E05252] px-1",
+                    title: "Remove plugin",
+                    onclick: move |_| remove_plugin(&mut state, idx),
+                    "×"
+                  }
+                }
+                for (pname, val, min, max, _default) in plugin.params.iter() {
+                  div { class: "flex flex-col gap-1",
+                    div {
+                      class: "flex items-center justify-between text-[11px]",
+                      label { class: "text-[#9AA4B2]", "{pname}" }
+                      span { class: "font-mono tabular-nums text-[#ECEFF4]", "{val:.2}" }
+                    }
+                    input {
+                      r#type: "range",
+                      min: "{min}",
+                      max: "{max}",
+                      step: "0.01",
+                      value: "{val}",
+                      class: "w-full accent-[#38B2AC]",
+                      oninput: {
+                        let param_name = pname.clone();
+                        move |evt| {
+                          if let Ok(v) = evt.value().parse::<f32>() {
+                            update_plugin_param(&mut state, idx, &param_name, v);
+                          }
+                        }
+                      },
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          button {
+            class: "w-full px-3 py-1.5 rounded text-xs font-medium bg-[#252A31] border border-[#E05252]/40 text-[#E05252] hover:bg-[#E05252]/15 transition",
+            onclick: move |_| clear_all_plugins(&mut state),
+            "Clear Chain"
+          }
         }
       }
     }
   }
 }
 
-/// Creates a plugin instance and adds it to the player's effect chain.
+fn sync_chain_to_player(state: &AppState) {
+  let registry = (state.plugin_registry)();
+  let specs = state.active_plugins.read().clone();
+  let plugins = instantiate_active_plugins(&registry, &specs);
+  if let Some(player) = state.player_state.read().as_ref() {
+    player.replace_plugins(plugins);
+  }
+}
+
 fn add_plugin(state: &mut AppState, plugin_id: &str) {
   let registry = (state.plugin_registry)();
   let Some(plugin) = registry.create(plugin_id) else {
@@ -129,42 +143,50 @@ fn add_plugin(state: &mut AppState, plugin_id: &str) {
       .collect(),
   };
 
-  // Add to player if available.
-  let reader = state.player_state.read();
-  if let Some(ref player) = *reader {
-    // Create a fresh instance for the player (the one above is for UI state).
-    if let Some(player_plugin) = registry.create(plugin_id) {
-      player.add_plugin(player_plugin);
-    }
-  }
-  drop(reader);
-
   state.active_plugins.write().push(active);
+  sync_chain_to_player(state);
   state.status_msg.set(format!("Added plugin: {plugin_id}"));
 }
 
-/// Updates a parameter on an active plugin and syncs to the player.
-fn update_plugin_param(state: &mut AppState, plugin_idx: usize, param_name: &str, value: f32) {
-  let mut plugins = state.active_plugins.write();
-  if let Some(plugin) = plugins.get_mut(plugin_idx) {
-    if let Some(param) = plugin.params.iter_mut().find(|p| p.0 == param_name) {
-      param.1 = value.clamp(param.2, param.3);
+fn remove_plugin(state: &mut AppState, idx: usize) {
+  let removed = {
+    let mut plugins = state.active_plugins.write();
+    if idx < plugins.len() {
+      Some(plugins.remove(idx).name)
+    } else {
+      None
     }
+  };
+  if let Some(name) = removed {
+    sync_chain_to_player(state);
+    state.status_msg.set(format!("Removed plugin: {name}"));
   }
-  // Note: Real-time parameter sync to the AudioPlayer effect chain would
-  // require shared mutable access to the plugin instances. For now, updating
-  // the UI state; the player would need to be rebuilt with updated params
-  // on the next apply or re-add cycle.
 }
 
-/// Removes all plugins from the chain.
+fn update_plugin_param(state: &mut AppState, plugin_idx: usize, param_name: &str, value: f32) {
+  if !value.is_finite() {
+    return;
+  }
+  let mut clamped = value;
+  {
+    let mut plugins = state.active_plugins.write();
+    if let Some(plugin) = plugins.get_mut(plugin_idx)
+      && let Some(param) = plugin.params.iter_mut().find(|p| p.0 == param_name)
+    {
+      clamped = value.clamp(param.2, param.3);
+      param.1 = clamped;
+    }
+  }
+  // Live parameter sync to the real-time AudioPlayer effect chain.
+  if let Some(player) = state.player_state.read().as_ref() {
+    player.set_plugin_param(plugin_idx, param_name, clamped);
+  }
+}
+
 fn clear_all_plugins(state: &mut AppState) {
-  let reader = state.player_state.read();
-  if let Some(ref player) = *reader {
+  if let Some(player) = state.player_state.read().as_ref() {
     player.clear_effects();
   }
-  drop(reader);
-
   state.active_plugins.write().clear();
   state.status_msg.set("Plugin chain cleared".to_string());
 }

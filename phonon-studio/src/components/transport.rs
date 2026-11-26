@@ -1,174 +1,230 @@
 #![allow(non_snake_case)]
 
+use crate::project::format_timecode;
+use crate::state::{AppState, WorkspaceTab, play_buffer};
 use dioxus::prelude::*;
-use phonon_core::{AudioBuffer, algorithms};
-use phonon_engine::AudioPlayer;
-
-use crate::state::AppState;
+use phonon_engine::PlaybackState;
+use std::sync::Arc;
+use std::time::Duration;
 
 #[component]
 pub fn Transport() -> Element {
   let mut state = use_context::<AppState>();
 
-  // Format duration for display
-  let time_display = match (state.display_info)() {
-    Some(info) => {
-      let mins = (info.duration / 60.0) as u32;
-      let secs = info.duration % 60.0;
-      format!("{}:{:05.2}", mins, secs)
+  // Poll live playhead position & playback state while active.
+  use_future(move || async move {
+    loop {
+      tokio::time::sleep(Duration::from_millis(120)).await;
+      let snapshot = {
+        let reader = state.player_state.read();
+        reader.as_ref().map(|p| {
+          (
+            p.playback_state(),
+            p.position_secs(),
+            p.duration_secs(),
+            p.is_finished(),
+          )
+        })
+      };
+      if let Some((pb_state, pos, dur, finished)) = snapshot {
+        if (state.playback_status)() != pb_state {
+          state.playback_status.set(pb_state);
+        }
+        if pb_state == PlaybackState::Playing {
+          state.playhead_secs.set(pos);
+          if dur > 0.0 && (dur - (state.playhead_duration_secs)()).abs() > 0.05 {
+            state.playhead_duration_secs.set(dur);
+          }
+        } else if finished && (state.playhead_secs)() > 0.0 {
+          state.playhead_secs.set(0.0);
+        }
+      }
     }
-    None => "0:00.00".to_string(),
-  };
+  });
+
+  let pos = (state.playhead_secs)();
+  let dur = (state.playhead_duration_secs)();
+  let pb_status = (state.playback_status)();
+  let vol = (state.volume)();
+  let source = (state.playback_source)();
+  let status_msg = (state.status_msg)();
+
+  let time_display = format!("{} / {}", format_timecode(pos), format_timecode(dur));
+  let vol_pct = format!("{:.0}%", vol * 100.0);
+  let seek_max = dur.max(0.01);
 
   rsx! {
-      footer {
-          class: "bg-neutral-800 p-4 border-t border-neutral-700 flex items-center justify-between",
+    footer {
+      class: "h-14 shrink-0 bg-[#1C1F24] px-4 border-t border-[#2D333C] flex items-center justify-between gap-4 select-none",
 
-          // Left: playback controls
-          div {
-              class: "flex gap-3 items-center",
-              button {
-                  class: "px-3 py-2 rounded-sm shadow-sm transition hover:opacity-90 bg-neutral-700 text-white text-xl",
-                  title: "Play",
-                  onclick: move |_| async move { play_audio(&mut state).await; },
-                  "▶"
-              }
-              button {
-                  class: "px-3 py-2 rounded-sm shadow-sm transition hover:opacity-90 bg-yellow-600 text-white text-xl",
-                  title: "Pause",
-                  onclick: move |_| {
-                      if let Some(player) = state.player_state.read().as_ref() {
-                          player.pause();
-                          state.status_msg.set("Paused".to_string());
-                      }
-                  },
-                  "⏸"
-              }
-              button {
-                  class: "px-3 py-2 rounded-sm shadow-sm transition hover:opacity-90 bg-red-600 text-white text-xl",
-                  title: "Stop",
-                  onclick: move |_| {
-                      if let Some(player) = state.player_state.read().as_ref() {
-                          player.stop();
-                          state.status_msg.set("Stopped".to_string());
-                      }
-                  },
-                  "⏹"
-              }
-          }
-
-          // Center: time + volume
-          div {
-              class: "flex items-center gap-4",
-
-              // Time display
-              span { class: "text-sm font-mono text-gray-400", "{time_display}" }
-
-              // Volume slider
-              div { class: "flex items-center gap-2",
-                  span { class: "text-xs text-gray-500", "🔊" }
-                  input {
-                      r#type: "range",
-                      min: "0",
-                      max: "1.5",
-                      step: "0.01",
-                      value: "{(state.volume)()}",
-                      class: "w-24 accent-emerald-500",
-                      oninput: move |evt| {
-                          if let Ok(v) = evt.value().parse::<f32>() {
-                              state.volume.set(v);
-                          }
-                      },
-                  }
-                  {
-                      let vol_pct = format!("{:.0}%", (state.volume)() * 100.0);
-                      rsx! { span { class: "text-xs text-gray-400 w-10", "{vol_pct}" } }
-                  }
-              }
-          }
-
-          // Right: status
-          div {
-              class: "text-sm text-gray-500",
-              "{(state.status_msg)()}"
-          }
+      // Left: Transport buttons
+      div {
+        class: "flex items-center gap-1.5 shrink-0",
+        button {
+          class: if pb_status == PlaybackState::Playing {
+            "px-3 py-1.5 rounded text-xs font-semibold bg-[#E8A238] text-[#141619]"
+          } else {
+            "px-3 py-1.5 rounded text-xs font-semibold bg-[#252A31] text-[#ECEFF4] hover:bg-[#E8A238] hover:text-[#141619] transition"
+          },
+          title: "Play / Resume",
+          onclick: move |_| async move {
+            handle_play_click(&mut state).await;
+          },
+          "▶"
+        }
+        button {
+          class: if pb_status == PlaybackState::Paused {
+            "px-2.5 py-1.5 rounded text-xs bg-[#E8A238]/25 text-[#E8A238] border border-[#E8A238]/40"
+          } else {
+            "px-2.5 py-1.5 rounded text-xs bg-[#252A31] text-[#ECEFF4] hover:bg-[#2D333C]"
+          },
+          title: "Pause",
+          onclick: move |_| {
+            if let Some(player) = state.player_state.read().as_ref() {
+              player.pause();
+              state.playback_status.set(PlaybackState::Paused);
+              state.status_msg.set("Paused".to_string());
+            }
+          },
+          "⏸"
+        }
+        button {
+          class: "px-2.5 py-1.5 rounded text-xs bg-[#252A31] text-[#9AA4B2] hover:text-[#E05252] hover:bg-[#2D333C]",
+          title: "Stop",
+          onclick: move |_| {
+            if let Some(player) = state.player_state.read().as_ref() {
+              player.stop();
+              state.playback_status.set(PlaybackState::Stopped);
+              state.playhead_secs.set(0.0);
+              state.status_msg.set("Stopped".to_string());
+            }
+          },
+          "⏹"
+        }
       }
+
+      // Center: Interactive Seek bar + Timecode + Source label
+      div {
+        class: "flex-1 min-w-0 max-w-2xl flex items-center gap-3",
+        span {
+          class: "hidden lg:inline-block text-[11px] text-[#9AA4B2] truncate max-w-[160px] shrink-0",
+          title: "{source}",
+          "{source}"
+        }
+        input {
+          r#type: "range",
+          min: "0",
+          max: "{seek_max}",
+          step: "0.05",
+          value: "{pos.clamp(0.0, seek_max)}",
+          disabled: dur <= 0.0,
+          class: "flex-1 accent-[#E8A238] disabled:opacity-40",
+          oninput: move |evt| {
+            if let Ok(target) = evt.value().parse::<f64>() {
+              state.playhead_secs.set(target);
+              if let Some(player) = state.player_state.read().as_ref() {
+                let _ = player.seek(target);
+              }
+            }
+          },
+        }
+        span {
+          class: "text-xs font-mono tabular-nums text-[#ECEFF4] shrink-0 w-32 text-right",
+          "{time_display}"
+        }
+      }
+
+      // Right: Live Volume + Status
+      div {
+        class: "flex items-center gap-3 shrink-0",
+        div {
+          class: "flex items-center gap-1.5",
+          span { class: "text-[11px] text-[#9AA4B2]", "Vol" }
+          input {
+            r#type: "range",
+            min: "0",
+            max: "1.5",
+            step: "0.01",
+            value: "{vol}",
+            class: "w-20 accent-[#38B2AC]",
+            oninput: move |evt| {
+              if let Ok(v) = evt.value().parse::<f32>() {
+                state.volume.set(v);
+                if let Some(player) = state.player_state.read().as_ref() {
+                  player.set_volume(v);
+                }
+              }
+            },
+          }
+          span { class: "text-[11px] font-mono tabular-nums text-[#9AA4B2] w-9 text-right", "{vol_pct}" }
+        }
+
+        div {
+          class: "hidden xl:block text-xs text-[#9AA4B2] max-w-[260px] truncate border-l border-[#2D333C] pl-3",
+          title: "{status_msg}",
+          "{status_msg}"
+        }
+      }
+    }
   }
 }
 
-async fn play_audio(state: &mut AppState) {
-  // Init player if needed
-  if state.player_state.read().is_none() {
-    match AudioPlayer::new() {
-      Ok(p) => state.player_state.set(Some(p)),
-      Err(e) => {
-        state.status_msg.set(format!("Audio Init Failed: {}", e));
-        return;
-      }
-    }
-  }
-
-  let Some(source) = state.audio_buffer.read().clone() else {
-    return;
+async fn handle_play_click(state: &mut AppState) {
+  // Resume ONLY when the player is paused on the exact same active track token.
+  let can_resume = {
+    let reader = state.player_state.read();
+    reader.as_ref().is_some_and(|p| {
+      p.playback_state() == PlaybackState::Paused
+        && (state.active_track_token)() == (state.loaded_track_token)()
+        && (state.loaded_track_token)() != 0
+    })
   };
-  // Signal guards must not live across the await below.
-  let device = {
-    let player_reader = state.player_state.read();
-    let Some(ref player) = *player_reader else {
-      return;
-    };
-    // If paused, just resume
-    if player.playback_state() == phonon_engine::PlaybackState::Paused {
+  if can_resume {
+    if let Some(player) = state.player_state.read().as_ref() {
       player.resume();
-      None
-    } else {
-      Some((player.device_sample_rate(), player.device_channels()))
     }
-  };
-  let Some((device_rate, device_channels)) = device else {
+    state.playback_status.set(PlaybackState::Playing);
     state.status_msg.set("Resumed".to_string());
     return;
-  };
+  }
 
-  // Volume, resampling and channel conversion run on the blocking pool.
-  let vol = (state.volume)();
-  state.status_msg.set(format!(
-    "Preparing {}Hz/{}ch -> {}Hz/{}ch...",
-    source.sample_rate, source.channels, device_rate, device_channels
-  ));
-  let prepared = tokio::task::spawn_blocking(move || {
-    let mut buffer = AudioBuffer::clone(&source);
-    if (vol - 1.0).abs() > 0.01 {
-      algorithms::adjust_volume(&mut buffer, vol);
+  match (state.active_tab)() {
+    WorkspaceTab::AudioLab => {
+      let Some(buf) = state.audio_buffer.read().clone() else {
+        state
+          .status_msg
+          .set("Open an audio file in Audio Lab first".to_string());
+        return;
+      };
+      let name = state
+        .display_info
+        .read()
+        .as_ref()
+        .map(|i| {
+          std::path::Path::new(&i.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| i.path.clone())
+        })
+        .unwrap_or_else(|| "Audio Lab".to_string());
+      play_buffer(state, buf, name, true, None).await;
     }
-    if buffer.sample_rate != device_rate {
-      buffer = algorithms::resample(&buffer, device_rate)?;
+    WorkspaceTab::PodcastStudio => {
+      let ep = state.rendered_episode.read().clone();
+      if let Some(ep) = ep {
+        play_buffer(
+          state,
+          Arc::new(ep.audio.clone()),
+          "Assembled Episode".to_string(),
+          false,
+          None,
+        )
+        .await;
+      } else {
+        state
+          .status_msg
+          .set("Click Preview on a segment or Assemble Episode first".to_string());
+      }
     }
-    if buffer.channels != device_channels {
-      buffer = algorithms::ensure_channels(&buffer, device_channels)?;
-    }
-    Ok::<_, phonon_core::PhononError>(buffer)
-  })
-  .await;
-
-  let buffer = match prepared {
-    Ok(Ok(buffer)) => buffer,
-    Ok(Err(e)) => {
-      state.status_msg.set(format!("Playback Error: {}", e));
-      return;
-    }
-    Err(e) => {
-      state.status_msg.set(format!("Task error: {}", e));
-      return;
-    }
-  };
-
-  let result = match state.player_state.read().as_ref() {
-    Some(player) => player.play(&buffer),
-    None => return,
-  };
-  match result {
-    Ok(_) => state.status_msg.set("Playing...".to_string()),
-    Err(e) => state.status_msg.set(format!("Playback Error: {}", e)),
   }
 }
