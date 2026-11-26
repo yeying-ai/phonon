@@ -278,3 +278,12 @@
 - [x] **N3** `phonon-ai` 可靠性：`retry_transient` 加抖动、`env_key` 自动 trim、`WhisperStt` 接入重试；`Endpoint.api_key` 用 `ApiKey` 脱敏；修 `AnyTts::synthesize_streaming` 绕过 `max_chars`、STT `max_secs==0`、Qwen 10 MB 字节切分与非限流错误误重试
 - [x] **N4** `phonon-podcast` 与 `phonon-cli`：`generate_to_file` 按扩展名编码、`preview_segment` 补齐 `segment.language`、`level_segments` 限最大 +24 dB、`validate()` 校验 `PipelineConfig`、修章节越界与孤立标点字幕；CLI tracing 固定写 stderr、`lufs --target` 缺 `--output` 报错
 - [x] **N5** `phonon-io` / `phonon-wav` / `phonon-server` / `phonon-mcp`：`write_mp3` 改为 8192 帧流式分块编码、`attach_flac_tag` 替换旧封面、`phonon-wav` 校验 0 采样率/声道；`podcast_preview_handler` 强类型与正确状态码、同步 `phonon-server/README.md`；MCP 校验 JSON-RPC 2.0 请求对象、`audio_pan` 范围校验、`audio_info` 有限值安全及缺 `PHONON_MCP_ROOT` 告警
+
+## v0.9.0 — Phonon Studio: AI Podcast & Voice Studio (Desktop Phase 1 MVP)
+
+- [x] **S1** 架构设计文档（`docs/studio-architecture.md`）
+- [ ] **S2** 底层最小接口扩展：`phonon-engine` 插件参数实时更新与链同步、`phonon-ai` 预置供应商/音色查询、`phonon-podcast` LUFS 母带选项与离线/缓存段拼装
+- [ ] **S3** `phonon-studio` 纯 Rust 可测试内核：`StudioProject` IR（兼容 `PodcastScript`）、Undo/Redo 历史、分段缓存状态、母带响度与插件烘烤导出逻辑 + 单元测试
+- [ ] **S4** AI Podcast Studio 三栏桌面界面：供应商/角色/母带配置、AI 脚本起草、逐段 `CachingTts` 试听与局部重合成、整期拼装、BS.1770 LUFS/dBTP 仪表、可跳转章节/SRT 预览与标签化一键导出
+- [ ] **S5** Audio Lab 次级工作台修复与整合：实时插件参数同步、懒加载播放器链同步、修复暂停切轨误续播、共享实时 Seek/音量 Transport、导出支持烘烤插件链
+- [ ] **S6** Tailwind v4 构建、全工作区质量门禁（`fmt`/`clippy -D warnings`/`cargo test --workspace`）与文档更新
