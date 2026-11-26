@@ -49,6 +49,10 @@ jobs:
         run: cargo nextest run --workspace --exclude phonon-studio
       - name: Execute phonon-io tests with the aac feature
         run: cargo nextest run -p phonon-io --features aac
+      - name: Verify pure-Rust phonon-io (no C/LGPL codecs)
+        run: |
+          cargo clippy -p phonon-io --no-default-features --all-targets -- -D warnings
+          cargo nextest run -p phonon-io --no-default-features
       - name: Execute doc tests
         run: cargo test --doc --workspace --exclude phonon-studio
       - name: Generate a changelog
@@ -65,6 +69,22 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         with:
           body: ${{ steps.git-cliff.outputs.content }}
+
+  build-studio:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install desktop system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev pkg-config build-essential libgtk-3-dev libwebkit2gtk-4.1-dev libxdotool-dev libsoup-3.0-dev
+      - name: Install Rust
+        run: rustup toolchain install stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Lint phonon-studio
+        run: cargo clippy -p phonon-studio --all-targets -- -D warnings
+      - name: Test phonon-studio
+        run: cargo test -p phonon-studio
 
   build-wasm:
     runs-on: ubuntu-latest

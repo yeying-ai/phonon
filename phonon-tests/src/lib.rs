@@ -474,4 +474,233 @@ mod tests {
     let _ = std::fs::remove_file(&in_path);
     let _ = std::fs::remove_file(&out_path);
   }
+
+  // -----------------------------------------------------------------------
+  // FLAC + OGG Vorbis tagged roundtrip (TempDir)
+  // -----------------------------------------------------------------------
+
+  #[test]
+  fn test_flac_and_ogg_tagged_roundtrip() {
+    use phonon_io::{FlacConfig, OggConfig, PodcastTags, write_flac_tagged, write_ogg_tagged};
+
+    let dir = tempfile::tempdir().unwrap();
+    let mono = sine_wave(44100, 1.0, 440.0);
+    let stereo = algorithms::ensure_channels(&mono, 2).unwrap();
+    let tags = PodcastTags {
+      title: Some("Tagged Roundtrip".into()),
+      artist: Some("Phonon".into()),
+      album: Some("v0.9 Suite".into()),
+      year: Some(2026),
+      ..Default::default()
+    };
+
+    let flac_path = dir.path().join("ep.flac");
+    write_flac_tagged(&flac_path, &stereo, &FlacConfig::default(), &tags).unwrap();
+    let flac_loaded = phonon_io::read_audio(&flac_path).unwrap();
+    assert_eq!(flac_loaded.sample_rate, 44100);
+    assert_eq!(flac_loaded.channels, 2);
+    assert!((flac_loaded.duration_secs() - 1.0).abs() < 0.01);
+
+    let ogg_path = dir.path().join("ep.ogg");
+    write_ogg_tagged(&ogg_path, &stereo, &OggConfig::default(), &tags).unwrap();
+    let ogg_loaded = phonon_io::read_audio(&ogg_path).unwrap();
+    assert_eq!(ogg_loaded.sample_rate, 44100);
+    assert_eq!(ogg_loaded.channels, 2);
+    assert!((ogg_loaded.duration_secs() - 1.0).abs() < 0.05);
+  }
+
+  // -----------------------------------------------------------------------
+  // Phase 2 voice pipeline: VAD → splice_ranges → local voice enhancement
+  // -----------------------------------------------------------------------
+
+  #[test]
+  fn test_phase2_voice_vad_splice_and_enhance_end_to_end() {
+    use phonon_core::{
+      VoiceEnhanceConfig, detect_speech_regions, enhance_voice, measure_loudness, splice_ranges,
+    };
+
+    let sr = 16000u32;
+    let clip_a = sine_wave(sr, 1.2, 300.0);
+    let pause = silence_buffer(sr, 1.0);
+    let clip_b = sine_wave(sr, 1.2, 420.0);
+    let mut combined =
+      Vec::with_capacity(clip_a.samples.len() + pause.samples.len() + clip_b.samples.len());
+    combined.extend_from_slice(&clip_a.samples);
+    combined.extend_from_slice(&pause.samples);
+    combined.extend_from_slice(&clip_b.samples);
+
+    let raw = AudioBuffer {
+      samples: combined,
+      sample_rate: sr,
+      channels: 1,
+    };
+    let regions = detect_speech_regions(&raw, -35.0, 0.25, 0.05).unwrap();
+    assert_eq!(
+      regions.len(),
+      2,
+      "expected 2 speech regions, got {regions:?}"
+    );
+
+    let spliced = splice_ranges(&raw, &regions, 0.015).unwrap();
+    assert!(
+      spliced.duration_secs() < 2.8 && spliced.duration_secs() > 2.2,
+      "unexpected spliced duration: {:.2}s",
+      spliced.duration_secs()
+    );
+
+    let enhanced = enhance_voice(&spliced, &VoiceEnhanceConfig::podcast_studio()).unwrap();
+    let report = measure_loudness(&enhanced);
+    assert!(
+      (report.integrated_lufs - (-16.0)).abs() < 1.5,
+      "expected ~-16 LUFS, got {}",
+      report.integrated_lufs
+    );
+    assert!(
+      report.true_peak_dbtp <= -0.5,
+      "true peak exceeded ceiling: {} dBTP",
+      report.true_peak_dbtp
+    );
+  }
+
+  // -----------------------------------------------------------------------
+  // MCP wire framing: Server::run over async duplex streams + Studio tools
+  // -----------------------------------------------------------------------
+
+  #[tokio::test]
+  async fn test_mcp_stdio_framing_dsp_and_studio_coediting() {
+    use phonon_mcp::Server;
+    use serde_json::{Value, json};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    let dir = tempfile::tempdir().unwrap();
+    let wav_path = dir.path().join("voice.wav");
+    phonon_wav::write_wav(&wav_path, &sine_wave(16000, 2.0, 320.0)).unwrap();
+
+    let proj_path = dir.path().join("show.phonon.json");
+    std::fs::write(
+      &proj_path,
+      r#"{
+        "version": 1,
+        "script": {
+          "title": "Wire Test",
+          "speakers": { "host": { "voice_id": "alloy" } },
+          "segments": [
+            { "speaker": "host", "text": "Hello from wire test." }
+          ]
+        }
+      }"#,
+    )
+    .unwrap();
+
+    let (mut client_tx, server_rx) = tokio::io::duplex(64 * 1024);
+    let (server_tx, client_rx) = tokio::io::duplex(64 * 1024);
+
+    let server = Server::new(dir.path());
+    let server_task = tokio::spawn(async move { server.run(server_rx, server_tx).await });
+    let mut reader = BufReader::new(client_rx);
+
+    async fn send_recv(
+      tx: &mut tokio::io::DuplexStream,
+      rx: &mut BufReader<tokio::io::DuplexStream>,
+      msg: Value,
+    ) -> Value {
+      let mut line = msg.to_string();
+      line.push('\n');
+      tx.write_all(line.as_bytes()).await.unwrap();
+      tx.flush().await.unwrap();
+      let mut resp = String::new();
+      rx.read_line(&mut resp).await.unwrap();
+      serde_json::from_str::<Value>(&resp).unwrap()
+    }
+
+    // 1. Handshake + tools/list
+    let init = send_recv(
+      &mut client_tx,
+      &mut reader,
+      json!({ "jsonrpc": "2.0", "id": 1, "method": "initialize" }),
+    )
+    .await;
+    assert_eq!(init["result"]["serverInfo"]["name"], "phonon-mcp");
+
+    let list = send_recv(
+      &mut client_tx,
+      &mut reader,
+      json!({ "jsonrpc": "2.0", "id": 2, "method": "tools/list" }),
+    )
+    .await;
+    let tools = list["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 23, "expected 23 MCP tools");
+
+    // 2. audio_load → audio_eq → audio_compress → audio_enhance_voice
+    let load = send_recv(
+      &mut client_tx,
+      &mut reader,
+      json!({
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": { "name": "audio_load", "arguments": { "path": "voice.wav" } }
+      }),
+    )
+    .await;
+    let h0 = load["result"]["structuredContent"]["handle"]
+      .as_str()
+      .unwrap()
+      .to_string();
+
+    let eq = send_recv(
+      &mut client_tx,
+      &mut reader,
+      json!({
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": { "name": "audio_eq", "arguments": { "handle": h0, "preset": "voice" } }
+      }),
+    )
+    .await;
+    let h1 = eq["result"]["structuredContent"]["handle"]
+      .as_str()
+      .unwrap()
+      .to_string();
+
+    let comp = send_recv(
+      &mut client_tx,
+      &mut reader,
+      json!({
+        "jsonrpc": "2.0", "id": 5, "method": "tools/call",
+        "params": { "name": "audio_compress", "arguments": { "handle": h1, "preset": "voice" } }
+      }),
+    )
+    .await;
+    assert_eq!(comp["result"]["isError"], false);
+
+    // 3. studio_edit_segment → studio_get_project
+    let edit = send_recv(
+      &mut client_tx,
+      &mut reader,
+      json!({
+        "jsonrpc": "2.0", "id": 6, "method": "tools/call",
+        "params": {
+          "name": "studio_edit_segment",
+          "arguments": { "path": "show.phonon.json", "index": 0, "text": "Co-edited via wire!" }
+        }
+      }),
+    )
+    .await;
+    assert_eq!(edit["result"]["isError"], false);
+
+    let inspect = send_recv(
+      &mut client_tx,
+      &mut reader,
+      json!({
+        "jsonrpc": "2.0", "id": 7, "method": "tools/call",
+        "params": { "name": "studio_get_project", "arguments": { "path": "show.phonon.json" } }
+      }),
+    )
+    .await;
+    assert_eq!(
+      inspect["result"]["structuredContent"]["segments"][0]["text"],
+      "Co-edited via wire!"
+    );
+
+    drop(client_tx);
+    server_task.await.unwrap().unwrap();
+  }
 }
