@@ -84,11 +84,13 @@ impl CaptureState {
         return;
       }
       let take = input.len().min(remaining);
-      buf.extend(
-        input[..take]
-          .iter()
-          .map(|&s| if s.is_finite() { s.clamp(-1.0, 1.0) } else { 0.0 }),
-      );
+      buf.extend(input[..take].iter().map(|&s| {
+        if s.is_finite() {
+          s.clamp(-1.0, 1.0)
+        } else {
+          0.0
+        }
+      }));
       self.recorded_samples.store(buf.len(), Ordering::Relaxed);
       if take < input.len() {
         self.capped.store(true, Ordering::Relaxed);

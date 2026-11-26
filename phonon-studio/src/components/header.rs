@@ -308,7 +308,9 @@ async fn stop_audiolab_recording(state: &mut AppState) {
       ));
     }
     Ok(Err(e)) => state.status_msg.set(e),
-    Err(e) => state.status_msg.set(format!("Audio Lab save task error: {e}")),
+    Err(e) => state
+      .status_msg
+      .set(format!("Audio Lab save task error: {e}")),
   }
 }
 

@@ -1795,7 +1795,9 @@ async fn run_stop_segment_recording(
       run_align_recording(state, seg_idx, path_str, language_hint).await;
     }
     Ok(Err(e)) => state.status_msg.set(e),
-    Err(e) => state.status_msg.set(format!("Recording save task error: {e}")),
+    Err(e) => state
+      .status_msg
+      .set(format!("Recording save task error: {e}")),
   }
 }
 
