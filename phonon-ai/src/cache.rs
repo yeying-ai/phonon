@@ -7,8 +7,8 @@
 //! result before returning.
 //!
 //! The cache is intentionally simple — flat directory of `<blake3>.wav`
-//! files. WAV is used so cached audio is lossless and can be loaded by
-//! any reader.
+//! files written as 16-bit PCM WAV via atomic temp-file rename so concurrent
+//! readers never observe partially written files.
 
 use crate::AiError;
 use crate::tts::TtsProvider;
@@ -16,7 +16,47 @@ use crate::voice::VoiceConfig;
 use phonon_core::AudioBuffer;
 use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracing::{debug, info, instrument, warn};
+
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+fn update_len_prefixed(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+  hasher.update(&(bytes.len() as u64).to_le_bytes());
+  hasher.update(bytes);
+}
+
+fn update_opt_str(hasher: &mut blake3::Hasher, value: Option<&str>) {
+  match value {
+    None => {
+      hasher.update(&[0u8]);
+    }
+    Some(s) => {
+      hasher.update(&[1u8]);
+      update_len_prefixed(hasher, s.as_bytes());
+    }
+  }
+}
+
+fn write_wav_atomic(
+  cache_dir: &Path,
+  key: &str,
+  final_path: &Path,
+  buffer: &AudioBuffer,
+) -> Result<(), String> {
+  let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+  let pid = std::process::id();
+  let tmp_path = cache_dir.join(format!(".{key}.{pid}.{seq}.tmp.wav"));
+  if let Err(e) = phonon_wav::write_wav(&tmp_path, buffer) {
+    let _ = std::fs::remove_file(&tmp_path);
+    return Err(e.to_string());
+  }
+  if let Err(e) = std::fs::rename(&tmp_path, final_path) {
+    let _ = std::fs::remove_file(&tmp_path);
+    return Err(e.to_string());
+  }
+  Ok(())
+}
 
 /// Caching wrapper around an inner [`TtsProvider`].
 ///
@@ -61,27 +101,16 @@ impl<T: TtsProvider> CachingTts<T> {
   /// Compute the content-addressable key for a request.
   fn key_for(&self, text: &str, voice: &VoiceConfig) -> String {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(self.provider_id.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(voice.voice_id.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(voice.model.as_bytes());
-    hasher.update(b"\0");
-    hasher.update(&voice.speed.to_le_bytes());
-    hasher.update(b"\0");
-    if let Some(e) = &voice.emotion {
-      hasher.update(e.as_bytes());
-    }
-    hasher.update(b"\0");
-    if let Some(s) = &voice.style {
-      hasher.update(s.as_bytes());
-    }
-    hasher.update(b"\0");
-    if let Some(l) = &voice.language {
-      hasher.update(l.as_bytes());
-    }
-    hasher.update(b"\0");
-    hasher.update(text.as_bytes());
+    update_len_prefixed(&mut hasher, self.provider_id.as_bytes());
+    let fp = self.inner.cache_fingerprint();
+    update_opt_str(&mut hasher, fp.as_deref());
+    update_len_prefixed(&mut hasher, voice.voice_id.as_bytes());
+    update_len_prefixed(&mut hasher, voice.model.as_bytes());
+    hasher.update(&voice.speed.to_bits().to_le_bytes());
+    update_opt_str(&mut hasher, voice.emotion.as_deref());
+    update_opt_str(&mut hasher, voice.style.as_deref());
+    update_opt_str(&mut hasher, voice.language.as_deref());
+    update_len_prefixed(&mut hasher, text.as_bytes());
     hasher.finalize().to_hex().to_string()
   }
 
@@ -107,6 +136,10 @@ impl<T: TtsProvider> CachingTts<T> {
 }
 
 impl<T: TtsProvider> TtsProvider for CachingTts<T> {
+  fn cache_fingerprint(&self) -> Option<String> {
+    self.inner.cache_fingerprint()
+  }
+
   #[instrument(skip(self, text, voice), fields(text_len = text.len(), voice = %voice.voice_id))]
   fn synthesize(
     &self,
@@ -117,27 +150,46 @@ impl<T: TtsProvider> TtsProvider for CachingTts<T> {
       let key = self.key_for(text, voice);
       let path = self.path_for(&key);
 
-      if path.exists() {
-        match phonon_wav::read_wav(&path) {
-          Ok(buf) => {
-            info!(key = %key, "TTS cache hit");
-            return Ok(buf);
-          }
-          Err(e) => {
-            warn!(key = %key, error = %e, "TTS cache file unreadable, re-synthesizing");
-          }
+      let read_path = path.clone();
+      let cached = tokio::task::spawn_blocking(move || {
+        if !read_path.exists() {
+          return None;
         }
-      } else {
-        debug!(key = %key, "TTS cache miss");
+        Some(phonon_wav::read_wav(&read_path))
+      })
+      .await
+      .ok()
+      .flatten();
+
+      match cached {
+        Some(Ok(buf)) => {
+          info!(key = %key, "TTS cache hit");
+          return Ok(buf);
+        }
+        Some(Err(e)) => {
+          warn!(key = %key, error = %e, "TTS cache file unreadable, re-synthesizing");
+        }
+        None => {
+          debug!(key = %key, "TTS cache miss");
+        }
       }
 
       let buffer = self.inner.synthesize(text, voice).await?;
 
-      // Best-effort write — a cache failure should not fail synthesis.
-      if let Err(e) = phonon_wav::write_wav(&path, &buffer) {
-        warn!(key = %key, error = %e, "TTS cache write failed");
-      } else {
-        debug!(key = %key, "TTS cache stored");
+      // Best-effort atomic write off the async worker pool so concurrent
+      // readers never observe a half-written WAV.
+      let write_dir = self.cache_dir.clone();
+      let write_key = key.clone();
+      let write_path = path;
+      let write_buf = buffer.clone();
+      match tokio::task::spawn_blocking(move || {
+        write_wav_atomic(&write_dir, &write_key, &write_path, &write_buf)
+      })
+      .await
+      {
+        Ok(Ok(())) => debug!(key = %key, "TTS cache stored"),
+        Ok(Err(e)) => warn!(key = %key, error = %e, "TTS cache write failed"),
+        Err(e) => warn!(key = %key, error = %e, "TTS cache write task failed"),
       }
       Ok(buffer)
     }
@@ -311,5 +363,78 @@ mod tests {
       cache_a.key_for("Hello", &voice),
       cache_b.key_for("Hello", &voice)
     );
+  }
+
+  #[test]
+  fn test_key_distinguishes_none_from_empty_and_fingerprint() {
+    struct FingerprintedTts(&'static str);
+    impl TtsProvider for FingerprintedTts {
+      fn cache_fingerprint(&self) -> Option<String> {
+        Some(self.0.to_string())
+      }
+      async fn synthesize(
+        &self,
+        _text: &str,
+        _voice: &VoiceConfig,
+      ) -> Result<AudioBuffer, AiError> {
+        Ok(AudioBuffer {
+          samples: vec![0.1; 4],
+          sample_rate: 16_000,
+          channels: 1,
+        })
+      }
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let a = CachingTts::with_dir(
+      FingerprintedTts("minimax:speech-2.8-hd:32000:mp3"),
+      "minimax",
+      tmp.path().to_path_buf(),
+    )
+    .unwrap();
+    let b = CachingTts::with_dir(
+      FingerprintedTts("minimax:speech-2.8-turbo:32000:mp3"),
+      "minimax",
+      tmp.path().to_path_buf(),
+    )
+    .unwrap();
+    let v_none = VoiceConfig::new("alloy");
+    let mut v_empty = VoiceConfig::new("alloy");
+    v_empty.emotion = Some(String::new());
+
+    assert_ne!(a.key_for("hi", &v_none), b.key_for("hi", &v_none));
+    assert_ne!(a.key_for("hi", &v_none), a.key_for("hi", &v_empty));
+  }
+
+  #[tokio::test]
+  async fn test_concurrent_cache_writes_never_corrupt() {
+    let (cache, _calls, tmp) = temp_caching();
+    let cache = Arc::new(cache);
+    let voice = VoiceConfig::new("alloy");
+
+    let mut handles = Vec::new();
+    for _ in 0..8 {
+      let c = cache.clone();
+      let v = voice.clone();
+      handles.push(tokio::spawn(async move {
+        c.synthesize("same phrase concurrently", &v).await
+      }));
+    }
+    for h in handles {
+      let buf = h.await.unwrap().unwrap();
+      assert_eq!(buf.samples.len(), 4);
+    }
+
+    // No leftover .tmp files and final cache file is valid WAV.
+    let entries: Vec<_> = std::fs::read_dir(tmp.path())
+      .unwrap()
+      .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+      .collect();
+    assert!(entries.iter().all(|name| !name.ends_with(".tmp.wav")));
+    let cached = cache
+      .synthesize("same phrase concurrently", &voice)
+      .await
+      .unwrap();
+    assert_eq!(cached.samples.len(), 4);
   }
 }

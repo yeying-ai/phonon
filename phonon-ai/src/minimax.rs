@@ -307,6 +307,13 @@ impl MiniMaxTts {
 }
 
 impl crate::tts::TtsProvider for MiniMaxTts {
+  fn cache_fingerprint(&self) -> Option<String> {
+    Some(format!(
+      "minimax:{}:{}:{}",
+      self.model, self.sample_rate, self.format
+    ))
+  }
+
   #[instrument(skip(self, text), fields(text_len = text.len(), voice = %voice.voice_id, model = %self.model))]
   async fn synthesize(&self, text: &str, voice: &VoiceConfig) -> Result<AudioBuffer, AiError> {
     info!("Synthesizing text via MiniMax T2A");

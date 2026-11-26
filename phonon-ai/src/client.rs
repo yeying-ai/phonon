@@ -14,6 +14,136 @@ const RETRY_BASE_DELAY: Duration = Duration::from_millis(500);
 /// Upper bound for establishing a connection, separate from the overall
 /// request timeout so an unreachable host fails fast.
 pub(crate) const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Hard ceiling on downloaded audio payloads from provider-supplied URLs
+/// (100 MiB) to prevent OOM from unexpected or malicious responses.
+pub(crate) const MAX_DOWNLOAD_BYTES: usize = 100 * 1024 * 1024;
+
+/// Validate a URL returned by an upstream provider before issuing a request.
+///
+/// Always requires `https://`, forbids embedded credentials, and rejects
+/// loopback / private / link-local / metadata IP literals and local hostnames.
+/// When `required_host` is `Some(host)` (for authenticated polling URLs), the
+/// URL host must match `host` (case-insensitively) on the default HTTPS port.
+pub(crate) fn validate_provider_url(
+  raw: &str,
+  required_host: Option<&str>,
+) -> Result<reqwest::Url, AiError> {
+  let url =
+    reqwest::Url::parse(raw).map_err(|e| AiError::Decode(format!("Invalid provider URL: {e}")))?;
+  if url.scheme() != "https" {
+    return Err(AiError::Decode(format!(
+      "Provider URL must use https scheme, got {}",
+      url.scheme()
+    )));
+  }
+  if !url.username().is_empty() || url.password().is_some() {
+    return Err(AiError::Decode(
+      "Provider URL must not contain credentials".to_string(),
+    ));
+  }
+  let host_str = url
+    .host_str()
+    .ok_or_else(|| AiError::Decode("Provider URL is missing a host".to_string()))?;
+
+  if let Some(expected) = required_host {
+    let host_ok = host_str.eq_ignore_ascii_case(expected);
+    let port_ok = matches!(url.port(), None | Some(443));
+    if !host_ok || !port_ok {
+      return Err(AiError::Decode(format!(
+        "Provider URL host is not allowed (expected https://{expected})"
+      )));
+    }
+    return Ok(url);
+  }
+
+  let bare_host = host_str
+    .strip_prefix('[')
+    .and_then(|s| s.strip_suffix(']'))
+    .unwrap_or(host_str);
+
+  if let Ok(ip) = bare_host.parse::<std::net::IpAddr>() {
+    let disallowed = match ip {
+      std::net::IpAddr::V4(v4) => is_disallowed_ipv4(v4),
+      std::net::IpAddr::V6(v6) => is_disallowed_ipv6(v6),
+    };
+    if disallowed {
+      return Err(AiError::Decode(format!(
+        "Provider URL points to a non-public IP address: {ip}"
+      )));
+    }
+  } else {
+    let lower = bare_host.to_ascii_lowercase();
+    if lower == "localhost"
+      || lower.ends_with(".localhost")
+      || lower.ends_with(".local")
+      || lower.ends_with(".internal")
+    {
+      return Err(AiError::Decode(format!(
+        "Provider URL points to a local domain: {bare_host}"
+      )));
+    }
+  }
+  Ok(url)
+}
+
+fn is_disallowed_ipv4(ip: std::net::Ipv4Addr) -> bool {
+  ip.is_private()
+    || ip.is_loopback()
+    || ip.is_link_local()
+    || ip.is_broadcast()
+    || ip.is_documentation()
+    || ip.is_unspecified()
+    || ip.is_multicast()
+    // CGNAT 100.64.0.0/10
+    || (ip.octets()[0] == 100 && (ip.octets()[1] & 0b1100_0000) == 64)
+}
+
+fn is_disallowed_ipv6(ip: std::net::Ipv6Addr) -> bool {
+  if let Some(v4) = ip.to_ipv4_mapped() {
+    return is_disallowed_ipv4(v4);
+  }
+  let seg0 = ip.segments()[0];
+  let is_unique_local = (seg0 & 0xfe00) == 0xfc00;
+  let is_unicast_link_local = (seg0 & 0xffc0) == 0xfe80;
+  ip.is_loopback()
+    || ip.is_unspecified()
+    || ip.is_multicast()
+    || is_unique_local
+    || is_unicast_link_local
+}
+
+/// Read a response body up to `max_bytes`, failing early without buffering
+/// unbounded data into memory.
+pub(crate) async fn read_bounded_bytes(
+  mut resp: reqwest::Response,
+  max_bytes: usize,
+) -> Result<Vec<u8>, AiError> {
+  if let Some(len) = resp.content_length()
+    && len > max_bytes as u64
+  {
+    return Err(AiError::Decode(format!(
+      "Provider download exceeds size limit ({len} > {max_bytes} bytes)"
+    )));
+  }
+  let cap = resp
+    .content_length()
+    .map(|n| (n as usize).min(max_bytes))
+    .unwrap_or(0);
+  let mut buf = Vec::with_capacity(cap);
+  while let Some(chunk) = resp
+    .chunk()
+    .await
+    .map_err(|e| AiError::Http(e.to_string()))?
+  {
+    if buf.len().saturating_add(chunk.len()) > max_bytes {
+      return Err(AiError::Decode(format!(
+        "Provider download exceeds size limit ({max_bytes} bytes)"
+      )));
+    }
+    buf.extend_from_slice(&chunk);
+  }
+  Ok(buf)
+}
 
 /// Read a provider credential from the environment variable `name`.
 pub(crate) fn env_key(name: &str) -> Result<String, AiError> {
@@ -272,5 +402,53 @@ mod tests {
     let (result, calls) = run_with_errors(vec![AiError::Decode("bad mp3".into())]).await;
     assert!(result.is_err());
     assert_eq!(calls, 1);
+  }
+
+  #[test]
+  fn test_validate_provider_url_blocks_ssrf_and_host_mismatch() {
+    assert!(
+      validate_provider_url(
+        "https://api.replicate.com/v1/predictions/abc",
+        Some("api.replicate.com")
+      )
+      .is_ok()
+    );
+    assert!(validate_provider_url("https://evil.example/v1/p", Some("api.replicate.com")).is_err());
+    assert!(
+      validate_provider_url("http://api.replicate.com/v1/p", Some("api.replicate.com")).is_err()
+    );
+    assert!(
+      validate_provider_url(
+        "https://api.replicate.com:8443/v1/p",
+        Some("api.replicate.com")
+      )
+      .is_err()
+    );
+    assert!(validate_provider_url("https://user:pass@api.replicate.com/v1/p", None).is_err());
+    assert!(validate_provider_url("https://169.254.169.254/latest/meta-data", None).is_err());
+    assert!(validate_provider_url("https://127.0.0.1/secret.wav", None).is_err());
+    assert!(validate_provider_url("https://10.0.0.1/audio.wav", None).is_err());
+    assert!(validate_provider_url("https://[::1]/audio.wav", None).is_err());
+    assert!(validate_provider_url("https://localhost/audio.wav", None).is_err());
+    assert!(validate_provider_url("https://cdn.example.com/audio/out.wav?sig=1", None).is_ok());
+  }
+
+  #[tokio::test]
+  async fn test_read_bounded_bytes_enforces_limit() {
+    let ok_resp = reqwest::Response::from(
+      http::Response::builder()
+        .status(200)
+        .body(vec![1u8; 16])
+        .unwrap(),
+    );
+    assert_eq!(read_bounded_bytes(ok_resp, 16).await.unwrap().len(), 16);
+
+    let big_resp = reqwest::Response::from(
+      http::Response::builder()
+        .status(200)
+        .body(vec![1u8; 32])
+        .unwrap(),
+    );
+    assert!(read_bounded_bytes(big_resp, 16).await.is_err());
   }
 }

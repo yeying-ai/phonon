@@ -10,8 +10,15 @@ use tracing::{info, instrument};
 /// Trait for Text-to-Speech providers.
 ///
 /// Implementors convert text into an `AudioBuffer` using a specified voice.
-/// The trait uses associated future types to remain object-safe while supporting async.
+/// Async methods return `impl Future + Send` (RPITIT); use [`crate::AnyTts`]
+/// when runtime dispatch across providers is needed.
 pub trait TtsProvider: Send + Sync {
+  /// Optional fingerprint capturing provider-side synthesis settings that do
+  /// not live on [`VoiceConfig`] (e.g. model name, output sample rate, format),
+  /// so [`crate::CachingTts`] invalidates cache entries when those change.
+  fn cache_fingerprint(&self) -> Option<String> {
+    None
+  }
   /// Synthesizes the given text into an `AudioBuffer`.
   ///
   /// # Arguments
@@ -203,6 +210,10 @@ fn cut_between_words(text: &str, max_chars: usize) -> Vec<String> {
 }
 
 impl TtsProvider for OpenAiTts {
+  fn cache_fingerprint(&self) -> Option<String> {
+    Some(format!("openai:{}", self.format))
+  }
+
   #[instrument(skip(self, text), fields(text_len = text.len(), voice = %voice.voice_id))]
   async fn synthesize(&self, text: &str, voice: &VoiceConfig) -> Result<AudioBuffer, AiError> {
     info!("Synthesizing text via OpenAI TTS");

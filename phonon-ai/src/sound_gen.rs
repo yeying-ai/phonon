@@ -366,6 +366,7 @@ impl ReplicateSoundGen {
       .urls
       .and_then(|u| u.get)
       .unwrap_or_else(|| format!("{}/{}", REPLICATE_API_URL, pred.id));
+    let poll_url = crate::client::validate_provider_url(&poll_url, Some("api.replicate.com"))?;
 
     // Poll loop
     let start = std::time::Instant::now();
@@ -379,7 +380,7 @@ impl ReplicateSoundGen {
       let status_pred: ReplicatePrediction = retry_transient(|| async {
         let resp = self
           .client
-          .get(&poll_url)
+          .get(poll_url.clone())
           .header(
             "Authorization",
             format!("Bearer {}", self.api_token.expose()),
@@ -437,33 +438,36 @@ impl SoundGenProvider for ReplicateSoundGen {
     info!(prompt = %prompt.prompt, "Generating sound via Replicate");
 
     let output_url = self.run_prediction(prompt).await?;
-    info!(url = %output_url, "Prediction complete, downloading audio");
+    let parsed_url = crate::client::validate_provider_url(&output_url, None)?;
+    info!(
+      host = parsed_url.host_str().unwrap_or(""),
+      path = parsed_url.path(),
+      "Prediction complete, downloading audio"
+    );
 
     // Download the output audio file. A non-2xx body (e.g. an expired
     // signed URL's error page) must not reach the audio decoder.
     let audio_bytes = retry_transient(|| async {
       let resp = self
         .client
-        .get(&output_url)
+        .get(parsed_url.clone())
         .send()
         .await
         .map_err(|e| AiError::Http(e.to_string()))?;
-      ensure_success(resp)
-        .await?
-        .bytes()
-        .await
-        .map_err(|e| AiError::Http(e.to_string()))
+      let resp = ensure_success(resp).await?;
+      crate::client::read_bounded_bytes(resp, crate::client::MAX_DOWNLOAD_BYTES).await
     })
     .await?;
 
     info!(bytes = audio_bytes.len(), "Downloaded audio from Replicate");
 
-    // Detect format from URL or default to wav.
-    let suffix = output_url
+    // Detect format from the URL path (ignoring query strings) or default to wav.
+    let suffix = parsed_url
+      .path()
       .rsplit('.')
       .next()
       .and_then(|ext| {
-        let e = ext.split('?').next().unwrap_or(ext).to_lowercase();
+        let e = ext.to_ascii_lowercase();
         if ["wav", "mp3", "flac", "ogg"].contains(&e.as_str()) {
           Some(e)
         } else {

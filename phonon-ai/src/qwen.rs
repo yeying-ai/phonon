@@ -110,6 +110,10 @@ fn language_type(language: Option<&str>) -> Option<&'static str> {
 }
 
 impl crate::tts::TtsProvider for QwenTts {
+  fn cache_fingerprint(&self) -> Option<String> {
+    Some(format!("qwen:{}", self.model))
+  }
+
   #[instrument(skip(self, text), fields(text_len = text.len(), voice = %voice.voice_id))]
   async fn synthesize(&self, text: &str, voice: &VoiceConfig) -> Result<AudioBuffer, AiError> {
     let request = TtsRequest {
@@ -140,20 +144,18 @@ impl crate::tts::TtsProvider for QwenTts {
     })
     .await?;
 
-    // The URL is pre-signed; it must not carry our key.
+    // The URL is pre-signed; validate it and never attach our key.
+    let download_url = crate::client::validate_provider_url(&parsed.output.audio.url, None)?;
     let audio_bytes = retry_transient(|| async {
       let resp = self
         .client
         .inner()
-        .get(&parsed.output.audio.url)
+        .get(download_url.clone())
         .send()
         .await
         .map_err(|e| AiError::Http(e.to_string()))?;
-      ensure_success(resp)
-        .await?
-        .bytes()
-        .await
-        .map_err(|e| AiError::Http(e.to_string()))
+      let resp = ensure_success(resp).await?;
+      crate::client::read_bounded_bytes(resp, crate::client::MAX_DOWNLOAD_BYTES).await
     })
     .await?;
 

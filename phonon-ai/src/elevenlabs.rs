@@ -197,6 +197,10 @@ impl ElevenLabsTts {
 const ELEVENLABS_PCM_SAMPLE_RATE: u32 = 24000;
 
 impl crate::tts::TtsProvider for ElevenLabsTts {
+  fn cache_fingerprint(&self) -> Option<String> {
+    Some(format!("elevenlabs:{}", self.model_id))
+  }
+
   #[instrument(skip(self, text), fields(text_len = text.len(), voice = %voice.voice_id))]
   async fn synthesize(&self, text: &str, voice: &VoiceConfig) -> Result<AudioBuffer, AiError> {
     info!("Synthesizing text via ElevenLabs TTS");

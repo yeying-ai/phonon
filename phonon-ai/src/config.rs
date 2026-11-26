@@ -586,7 +586,8 @@ impl Config {
       Protocol::MiniMax => TtsBackend::MiniMax(
         MiniMaxTts::with_api_key(ep.api_key.clone())?
           .with_base_url(ep.base_url.clone())?
-          .with_model(model.clone()),
+          .with_model(model.clone())
+          .with_format(format),
       ),
       Protocol::Qwen => TtsBackend::Qwen(
         QwenTts::with_client(HttpClient::new(
@@ -810,6 +811,22 @@ impl AnyTts {
 }
 
 impl TtsProvider for AnyTts {
+  fn cache_fingerprint(&self) -> Option<String> {
+    let backend = match &self.backend {
+      TtsBackend::OpenAi(p) => p.cache_fingerprint(),
+      TtsBackend::MiniMax(p) => p.cache_fingerprint(),
+      TtsBackend::Qwen(p) => p.cache_fingerprint(),
+      TtsBackend::Edge(p) => p.cache_fingerprint(),
+      TtsBackend::ElevenLabs(p) => p.cache_fingerprint(),
+    };
+    Some(format!(
+      "any:{}:{}:{}",
+      self.provider,
+      self.model,
+      backend.unwrap_or_default()
+    ))
+  }
+
   async fn synthesize(&self, text: &str, voice: &VoiceConfig) -> Result<AudioBuffer, AiError> {
     let mut chunks = self.chunks(text).into_iter();
     let first = chunks.next().unwrap_or_default();
