@@ -1,38 +1,33 @@
 # Phonon Studio
 
-Desktop audio processing application built with Dioxus.
+Desktop **AI Podcast & Voice Studio** + **Audio Lab** built with Rust and Dioxus 0.7 directly on top of the Phonon workspace crates.
 
-## Features (Current)
+See [docs/studio-architecture.md](../docs/studio-architecture.md) for the full architecture and Phase 2 roadmap.
 
-- Open WAV files
-- Display audio file information (sample rate, channels, duration)
+## Capabilities
 
-## Dependencies
+### AI Podcast Studio (Primary Workspace)
+- **Script & Project Editor**: Multi-speaker dialogue editor with chapter markers, per-segment language overrides, drag-and-drop import (`.phonon.json` or legacy CLI `PodcastScript` JSON), and bounded Undo/Redo.
+- **Multi-Vendor BYOK Providers**: Switch freely across `minimax`, `qwen`, `glm`, `stepfun`, `deepseek`, `openai`, `elevenlabs`, `edge` (keyless out-of-the-box), or custom `phonon.toml` endpoints with live environment-key status and verified preset voice selectors.
+- **AI Script Drafting**: Draft structured chaptered podcast scripts from a topic via the configured LLM provider.
+- **Per-Segment Cached Preview & Local Regeneration**: Content-addressed fingerprinting + `CachingTts` filesystem cache — edit any single line and re-synthesize only that line.
+- **Broadcast Mastering & Publishing**: Relative-LUFS BGM mixing, Intro/Outro stitching, BS.1770-4 loudness mastering (`-16` / `-14` / `-18` / `-23` LUFS with `-1.0 dBTP` true-peak ceiling), live LUFS/dBTP/LRA telemetry, click-to-seek Chapters, synchronized SRT preview, ID3 metadata + cover art, and one-click export (`MP3`, `WAV`, `FLAC`, `OGG`, `SRT`, `Chapters TXT`).
 
-- [Dioxus](https://dioxuslabs.com/) 0.7 - Desktop GUI framework
-- [rfd](https://github.com/PolyMeilex/rfd) - Native file dialogs
-- phonon-wav - WAV file reading
-- phonon-core - Audio algorithms
-- phonon-engine - Audio playback
+### Audio Lab (Secondary Workspace)
+- Waveform & 64-band FFT spectrum visualization with BS.1770-4 LUFS & True Peak metrics.
+- Offline DSP (BS.1770 LUFS normalize, peak normalize, fade in/out, speed, compressor presets) and 5-band Parametric EQ.
+- Real-time `DspPlugin` effect chain with live slider parameter sync and optional plugin-chain baking on export.
+- Shared real-time transport bar with interactive seek slider, live playhead timecode, and instant volume control.
 
-## Running
+## Running & Building
 
 ```bash
+# Rebuild Tailwind v4 stylesheet after changing UI classes
+cd phonon-studio && npm run build && cd ..
+
+# Run desktop application
 cargo run -p phonon-studio
+
+# Run headless unit tests for Studio core & operations
+cargo test -p phonon-studio
 ```
-
-Or with Dioxus CLI for hot reload:
-
-```bash
-dx serve --platform desktop
-```
-
-## Architecture
-
-The app uses Dioxus signals for state management:
-- `audio_state` - Loaded audio file information
-- `status_msg` - Status messages for user feedback
-
-## Development
-
-See [Todos.md](./Todos.md) for development roadmap.

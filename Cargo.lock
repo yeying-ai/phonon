@@ -4221,13 +4221,19 @@ dependencies = [
 name = "phonon-studio"
 version = "0.8.0"
 dependencies = [
+ "blake3",
  "dioxus",
  "dioxus-logger",
+ "phonon-ai",
  "phonon-core",
  "phonon-engine",
  "phonon-io",
+ "phonon-podcast",
  "phonon-wav",
  "rfd 0.15.4",
+ "serde",
+ "serde_json",
+ "tempfile",
  "tokio",
 ]
 
