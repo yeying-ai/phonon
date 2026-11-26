@@ -373,9 +373,42 @@ fn preset(name: &str) -> Option<&'static Preset> {
   PRESETS.iter().find(|p| p.name == name)
 }
 
+/// Public metadata about a built-in vendor preset (for UIs and diagnostics).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderPresetInfo {
+  /// Preset name (e.g. `"minimax"`, `"qwen"`, `"edge"`).
+  pub name: &'static str,
+  /// Environment variable expected for the API key (`None` for keyless Edge).
+  pub key_env: Option<&'static str>,
+  pub has_tts: bool,
+  pub has_stt: bool,
+  pub has_llm: bool,
+  pub default_tts_model: Option<&'static str>,
+  pub default_llm_model: Option<&'static str>,
+  /// Verified voice IDs for TTS (empty when the preset has no TTS).
+  pub voices: &'static [&'static str],
+}
+
 /// Names of the built-in presets, in table order.
 pub fn preset_names() -> impl Iterator<Item = &'static str> {
   PRESETS.iter().map(|p| p.name)
+}
+
+/// Metadata for every built-in provider preset, in table order.
+pub fn builtin_presets() -> Vec<ProviderPresetInfo> {
+  PRESETS
+    .iter()
+    .map(|p| ProviderPresetInfo {
+      name: p.name,
+      key_env: p.key_env,
+      has_tts: p.tts.is_some(),
+      has_stt: p.stt.is_some(),
+      has_llm: p.llm.is_some(),
+      default_tts_model: p.tts.as_ref().map(|t| t.model),
+      default_llm_model: p.llm.as_ref().map(|l| l.model),
+      voices: p.tts.as_ref().map_or(&[][..], |t| t.voices),
+    })
+    .collect()
 }
 
 // ─── Resolution ─────────────────────────────────────────────────────
@@ -456,6 +489,16 @@ impl Config {
       };
     }
     self.llm.model = model.or(self.llm.model.take());
+  }
+
+  /// Explicitly configured `[tts] provider`, if any.
+  pub fn tts_provider_setting(&self) -> Option<&str> {
+    self.tts.provider.as_deref()
+  }
+
+  /// Explicitly configured `[llm] provider`, if any.
+  pub fn llm_provider_setting(&self) -> Option<&str> {
+    self.llm.provider.as_deref()
   }
 
   /// Build the configured TTS provider.
@@ -1205,6 +1248,29 @@ mod tests {
     std::fs::write(&path, "[tts]\nprovider = \"edge\"").expect("write");
     let config = Config::load(Some(&path)).expect("load");
     assert_eq!(config.tts().expect("tts").provider(), "edge");
+    assert_eq!(config.tts_provider_setting(), Some("edge"));
     assert!(Config::load(Some(&dir.path().join("missing.toml"))).is_err());
+  }
+
+  #[test]
+  fn test_builtin_presets_metadata() {
+    let presets = builtin_presets();
+    assert_eq!(presets.len(), PRESETS.len());
+    let edge = presets
+      .iter()
+      .find(|p| p.name == "edge")
+      .expect("edge preset");
+    assert!(edge.has_tts);
+    assert!(!edge.has_llm);
+    assert!(edge.key_env.is_none());
+    assert!(!edge.voices.is_empty());
+
+    let deepseek = presets
+      .iter()
+      .find(|p| p.name == "deepseek")
+      .expect("deepseek preset");
+    assert!(!deepseek.has_tts);
+    assert!(deepseek.has_llm);
+    assert_eq!(deepseek.key_env, Some("DEEPSEEK_API_KEY"));
   }
 }

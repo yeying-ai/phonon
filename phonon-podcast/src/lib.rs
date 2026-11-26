@@ -34,7 +34,7 @@ pub use chapters::{
 };
 pub use config::{AssetSource, PipelineConfig};
 pub use export::{Episode, build_episode_metadata};
-pub use pipeline::{NoSoundGen, PodcastPipeline};
+pub use pipeline::{NoSoundGen, PodcastPipeline, render_episode_from_buffers};
 pub use script::{PodcastScript, Segment};
 pub use script_gen::{OpenAiScriptGenerator, ScriptGenerator, ScriptRequest};
 pub use subtitle::{SubtitleEntry, generate_srt, segments_to_srt_file, write_srt_file};

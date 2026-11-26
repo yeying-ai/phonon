@@ -119,6 +119,13 @@ impl PodcastScript {
         "normalize_target must be finite and non-negative".to_string(),
       ));
     }
+    if let Some(lufs) = cfg.target_lufs
+      && (!lufs.is_finite() || !(-60.0..=-5.0).contains(&lufs))
+    {
+      return Err(crate::PodcastError::Script(
+        "target_lufs must be finite and within [-60.0, -5.0] LUFS".to_string(),
+      ));
+    }
 
     Ok(())
   }

@@ -55,8 +55,16 @@ pub struct PipelineConfig {
   pub output_channels: u16,
 
   /// Target peak amplitude for final normalization (0.0 - 1.0).
+  /// Ignored when `target_lufs` is set.
   #[serde(default = "default_normalize_target")]
   pub normalize_target: f32,
+
+  /// Optional BS.1770-4 integrated loudness target in LUFS (e.g. `-16.0` for
+  /// Apple Podcasts, `-14.0` for Spotify/Web, `-23.0` for EBU R128). When set,
+  /// final mastering runs `normalize_lufs` with a `-1.0 dBTP` true-peak
+  /// ceiling instead of simple peak normalization.
+  #[serde(default, skip_serializing_if = "Option::is_none")]
+  pub target_lufs: Option<f32>,
 
   /// Fade-in duration at the start of the episode in seconds.
   #[serde(default = "default_fade_in")]
@@ -124,6 +132,7 @@ impl Default for PipelineConfig {
       output_sample_rate: default_sample_rate(),
       output_channels: default_channels(),
       normalize_target: default_normalize_target(),
+      target_lufs: None,
       fade_in_secs: default_fade_in(),
       fade_out_secs: default_fade_out(),
       tts_concurrency: default_tts_concurrency(),

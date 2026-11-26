@@ -361,6 +361,40 @@ impl AudioPlayer {
     }
   }
 
+  /// Updates a parameter on the active plugin at `plugin_idx`.
+  ///
+  /// Returns `false` if the index is out of range, `value` is non-finite, or
+  /// the plugin does not recognize `name`.
+  pub fn set_plugin_param(&self, plugin_idx: usize, name: &str, value: f32) -> bool {
+    if !value.is_finite() {
+      return false;
+    }
+    self
+      .state
+      .effect_chain
+      .lock()
+      .map(|mut chain| chain.set_parameter(plugin_idx, name, value))
+      .unwrap_or(false)
+  }
+
+  /// Replaces the entire playback effect chain atomically.
+  ///
+  /// Prepares every plugin off-lock and drops the previous chain after
+  /// releasing the mutex so the audio callback never waits on allocation or
+  /// deallocation.
+  pub fn replace_plugins(&self, plugins: Vec<Box<dyn phonon_core::DspPlugin>>) {
+    let mut new_chain = EffectChain::new();
+    for mut plugin in plugins {
+      plugin.prepare(self.device_sample_rate, self.device_channels);
+      new_chain.push(plugin);
+    }
+    let count = new_chain.len();
+    let _old_chain = self.state.effect_chain.lock().map(|mut chain| {
+      self.state.effect_count.store(count, Ordering::Relaxed);
+      std::mem::replace(&mut *chain, new_chain)
+    });
+  }
+
   /// Removes all effects from the playback chain.
   pub fn clear_effects(&self) {
     // Drop the effects after the lock is released.

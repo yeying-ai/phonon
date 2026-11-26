@@ -99,16 +99,37 @@ impl<T: TtsProvider, S: SoundGenProvider> PodcastPipeline<T, S> {
     // Segment order is kept, so the spans measured during assembly line
     // up with the script even though synthesis runs concurrently.
     let raw_buffers = self.synthesize_segments(script).await?;
+    self.assemble_episode(script, raw_buffers).await
+  }
+
+  /// Assemble a complete [`Episode`] from already-synthesized per-segment audio
+  /// buffers (e.g. from an interactive studio's per-segment cache), resolving
+  /// intro/outro/BGM assets and running mastering off the async runtime.
+  #[instrument(skip(self, script, segment_buffers), fields(title = %script.title, segments = segment_buffers.len()))]
+  pub async fn assemble_episode(
+    &self,
+    script: &PodcastScript,
+    segment_buffers: Vec<AudioBuffer>,
+  ) -> Result<Episode, PodcastError> {
+    script.validate()?;
+    if segment_buffers.len() != script.segments.len() {
+      return Err(PodcastError::Processing(format!(
+        "Segment buffer count ({}) does not match script segments ({})",
+        segment_buffers.len(),
+        script.segments.len()
+      )));
+    }
 
     let assets = self.resolve_assets(&script.config).await?;
-    let (assembled, spans) = render_off_runtime(raw_buffers, assets, script.config.clone()).await?;
+    let (assembled, spans) =
+      render_off_runtime(segment_buffers, assets, script.config.clone()).await?;
 
     let (chapters, srt) = build_episode_metadata(script, &spans);
     let episode = Episode::new(assembled)
       .with_chapters(chapters)
       .with_srt(srt);
 
-    info!("Episode generation complete");
+    info!("Episode assembly complete");
     Ok(episode)
   }
 
@@ -244,6 +265,58 @@ impl<T: TtsProvider, S: SoundGenProvider> PodcastPipeline<T, S> {
   }
 }
 
+/// Assemble a complete [`Episode`] offline from pre-synthesized segment buffers
+/// and file-backed intro/outro/BGM assets (no TTS or SoundGen provider needed).
+pub async fn render_episode_from_buffers(
+  script: &PodcastScript,
+  segment_buffers: Vec<AudioBuffer>,
+) -> Result<Episode, PodcastError> {
+  script.validate()?;
+  if segment_buffers.len() != script.segments.len() {
+    return Err(PodcastError::Processing(format!(
+      "Segment buffer count ({}) does not match script segments ({})",
+      segment_buffers.len(),
+      script.segments.len()
+    )));
+  }
+
+  let mut assets = Assets::default();
+  for (slot, source) in [
+    (&mut assets.intro, script.config.effective_intro()),
+    (&mut assets.outro, script.config.effective_outro()),
+    (&mut assets.bgm, script.config.effective_bgm()),
+  ] {
+    if let Some(src) = source {
+      match src {
+        AssetSource::File { path } => {
+          let p = path.clone();
+          let buf = tokio::task::spawn_blocking(move || {
+            phonon_io::read_audio(&p)
+              .map_err(|e| PodcastError::Io(format!("Failed to load '{}': {}", p, e)))
+          })
+          .await
+          .map_err(|e| PodcastError::Processing(format!("Asset loader task failed: {e}")))??;
+          *slot = Some(buf);
+        }
+        AssetSource::Generated { .. } => {
+          return Err(PodcastError::Processing(
+            "Offline episode rendering does not support generated sound assets".to_string(),
+          ));
+        }
+      }
+    }
+  }
+
+  let (assembled, spans) =
+    render_off_runtime(segment_buffers, assets, script.config.clone()).await?;
+  let (chapters, srt) = build_episode_metadata(script, &spans);
+  Ok(
+    Episode::new(assembled)
+      .with_chapters(chapters)
+      .with_srt(srt),
+  )
+}
+
 /// Intro / outro / BGM buffers resolved before rendering.
 #[derive(Default)]
 struct Assets {
@@ -316,7 +389,11 @@ fn render(
     assembled = mix_bgm(assembled, bgm, config.bgm_volume, speech_lufs)?;
   }
 
-  phonon_core::normalize(&mut assembled, config.normalize_target);
+  if let Some(target_lufs) = config.target_lufs {
+    phonon_core::normalize_lufs(&mut assembled, target_lufs, SEGMENT_TRUE_PEAK_DBTP);
+  } else {
+    phonon_core::normalize(&mut assembled, config.normalize_target);
+  }
   if config.fade_in_secs > 0.0 {
     phonon_core::fade_in(&mut assembled, config.fade_in_secs);
   }
@@ -1144,5 +1221,60 @@ mod tests {
 
     // Clean up
     let _ = std::fs::remove_file(&tmp);
+  }
+
+  #[tokio::test]
+  async fn test_render_episode_from_buffers_respects_target_lufs() {
+    let json = r#"{
+      "title": "LUFS Mastered",
+      "speakers": {
+        "host": { "voice_id": "alloy" },
+        "guest": { "voice_id": "echo" }
+      },
+      "segments": [
+        { "speaker": "host", "text": "Opening segment", "chapter": "Intro" },
+        { "speaker": "guest", "text": "Second segment", "chapter": "Deep Dive" }
+      ],
+      "config": {
+        "target_lufs": -16.0,
+        "output_sample_rate": 44100,
+        "output_channels": 1
+      }
+    }"#;
+    let script = PodcastScript::from_json(json).unwrap();
+    let tone = |freq: f64| {
+      let sr = 44100u32;
+      let n = (sr as f64 * 1.2) as usize;
+      let samples: Vec<f32> = (0..n)
+        .map(|i| 0.25 * (2.0 * std::f64::consts::PI * freq * i as f64 / sr as f64).sin() as f32)
+        .collect();
+      AudioBuffer {
+        samples,
+        sample_rate: sr,
+        channels: 1,
+      }
+    };
+    let episode = render_episode_from_buffers(&script, vec![tone(440.0), tone(550.0)])
+      .await
+      .unwrap();
+    let lufs = phonon_core::loudness_integrated(&episode.audio);
+    assert!(
+      (lufs - (-16.0)).abs() < 1.0,
+      "expected integrated loudness near -16.0 LUFS, got {lufs}"
+    );
+    assert_eq!(episode.chapters.len(), 2);
+    assert_eq!(episode.chapters[0].title, "Intro");
+    assert_eq!(episode.chapters[1].title, "Deep Dive");
+  }
+
+  #[test]
+  fn test_validate_rejects_out_of_range_target_lufs() {
+    let json = r#"{
+      "title": "Bad LUFS",
+      "speakers": { "host": { "voice_id": "alloy" } },
+      "segments": [{ "speaker": "host", "text": "Hi" }],
+      "config": { "target_lufs": 5.0 }
+    }"#;
+    assert!(PodcastScript::from_json(json).is_err());
   }
 }

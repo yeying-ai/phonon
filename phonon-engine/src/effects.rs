@@ -38,6 +38,20 @@ impl EffectChain {
     self.plugins.is_empty()
   }
 
+  /// Updates a parameter on the plugin at `index`.
+  ///
+  /// Returns `false` if `index` is out of range, `value` is non-finite, or the
+  /// plugin rejects the parameter name.
+  pub fn set_parameter(&mut self, index: usize, name: &str, value: f32) -> bool {
+    if !value.is_finite() {
+      return false;
+    }
+    match self.plugins.get_mut(index) {
+      Some(plugin) => plugin.set_parameter(name, value).is_ok(),
+      None => false,
+    }
+  }
+
   /// Processes interleaved samples through all plugins in order.
   pub fn process(&mut self, samples: &mut [f32], sample_rate: u32, channels: u16) {
     for plugin in &mut self.plugins {
@@ -50,6 +64,22 @@ impl EffectChain {
 mod tests {
   use super::*;
   use phonon_core::{LowPassPlugin, VolumePlugin};
+
+  #[test]
+  fn test_chain_set_parameter_updates_plugin_and_rejects_nan() {
+    let mut chain = EffectChain::new();
+    chain.push(Box::new(VolumePlugin::new(1.0)));
+
+    assert!(chain.set_parameter(0, "gain", 0.5));
+    assert!(!chain.set_parameter(0, "gain", f32::NAN));
+    assert!(!chain.set_parameter(1, "gain", 0.5));
+    assert!(!chain.set_parameter(0, "missing", 0.5));
+
+    let mut samples = vec![0.8f32, -0.8];
+    chain.process(&mut samples, 44100, 1);
+    assert!((samples[0] - 0.4).abs() < 1e-6);
+    assert!((samples[1] + 0.4).abs() < 1e-6);
+  }
 
   #[test]
   fn test_chain_applies_plugins_in_order() {
