@@ -31,20 +31,31 @@ pub fn overlay_at_position(
     });
   }
 
-  if position_secs < 0.0 {
-    return Err(PhononError::Wav("Position cannot be negative".to_string()));
+  let ch = base.frame_stride()?;
+  if !position_secs.is_finite() || position_secs < 0.0 {
+    return Err(PhononError::InvalidParam(
+      "Position must be finite and non-negative".to_string(),
+    ));
   }
 
-  let samples_per_sec = base.sample_rate as f64 * base.channels as f64;
-  let mut offset = (position_secs * samples_per_sec) as usize;
-  // Align to frame boundary
-  let ch = base.channels as usize;
-  if ch > 0 {
-    offset -= offset % ch;
+  let samples_per_sec = base.sample_rate as f64 * ch as f64;
+  let offset_f64 = position_secs * samples_per_sec;
+  let max_samples = (isize::MAX as usize) / std::mem::size_of::<f32>();
+  if !offset_f64.is_finite() || offset_f64 > max_samples as f64 {
+    return Err(PhononError::InvalidParam(
+      "Overlay position exceeds buffer capacity limits".to_string(),
+    ));
   }
+  let mut offset = offset_f64 as usize;
+  // Align to frame boundary
+  offset -= offset % ch;
 
   // Result length: max of (base length) and (offset + overlay length)
-  let result_len = base.samples.len().max(offset + overlay_buf.samples.len());
+  let overlay_end = offset
+    .checked_add(overlay_buf.samples.len())
+    .filter(|&len| len <= max_samples)
+    .ok_or_else(|| PhononError::InvalidParam("Overlay length overflow".to_string()))?;
+  let result_len = base.samples.len().max(overlay_end);
   let mut samples = vec![0.0_f32; result_len];
 
   // Copy base into result
@@ -211,5 +222,22 @@ mod tests {
     assert!((result.samples[0] - 0.5).abs() < 1e-6); // untouched
     assert!((result.samples[2] - 0.8).abs() < 1e-6); // overlay
     assert!((result.samples[3] - 0.8).abs() < 1e-6); // overlay
+  }
+
+  #[test]
+  fn test_overlay_nan_and_inf_error() {
+    let base = AudioBuffer {
+      samples: vec![0.5; 10],
+      sample_rate: 10,
+      channels: 1,
+    };
+    let overlay = AudioBuffer {
+      samples: vec![0.3; 4],
+      sample_rate: 10,
+      channels: 1,
+    };
+    assert!(overlay_at_position(&base, &overlay, f64::NAN).is_err());
+    assert!(overlay_at_position(&base, &overlay, f64::INFINITY).is_err());
+    assert!(overlay_at_position(&base, &overlay, 1e30).is_err());
   }
 }

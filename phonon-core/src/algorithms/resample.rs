@@ -30,7 +30,7 @@ pub fn resample_sinc(
   quality: usize,
 ) -> Result<AudioBuffer> {
   let ch = buffer.frame_stride()?;
-  if target_sample_rate == 0 {
+  if buffer.sample_rate == 0 || target_sample_rate == 0 {
     return Err(PhononError::InvalidSampleRate(0));
   }
   if buffer.sample_rate == target_sample_rate {
@@ -42,7 +42,17 @@ pub fn resample_sinc(
 
   let ratio = buffer.sample_rate as f64 / target_sample_rate as f64;
   let old_frames = buffer.samples.len() / ch;
-  let new_frames = (old_frames as f64 / ratio).ceil() as usize;
+  let new_frames_f64 = (old_frames as f64 / ratio).ceil();
+  let max_samples = (isize::MAX as usize) / std::mem::size_of::<f32>();
+  if !new_frames_f64.is_finite() || new_frames_f64 > (max_samples / ch) as f64 {
+    return Err(PhononError::InvalidParam(
+      "Resampled buffer size exceeds capacity limits".to_string(),
+    ));
+  }
+  let new_frames = new_frames_f64 as usize;
+  let total_samples = new_frames
+    .checked_mul(ch)
+    .ok_or_else(|| PhononError::InvalidParam("Resampled buffer size overflow".to_string()))?;
   let a = quality.max(1);
 
   // When downsampling, the sinc is stretched by `ratio` so its cutoff sits
@@ -85,7 +95,7 @@ pub fn resample_sinc(
     }
   };
 
-  let mut new_samples = vec![0.0f32; new_frames * ch];
+  let mut new_samples = vec![0.0f32; total_samples];
 
   #[cfg(feature = "parallel")]
   if new_frames >= PAR_THRESHOLD {
@@ -115,7 +125,7 @@ pub fn resample_sinc(
 /// Kept for backward compatibility and for cases where speed matters more than quality.
 pub fn resample_linear(buffer: &AudioBuffer, target_sample_rate: u32) -> Result<AudioBuffer> {
   let ch = buffer.frame_stride()?;
-  if target_sample_rate == 0 {
+  if buffer.sample_rate == 0 || target_sample_rate == 0 {
     return Err(PhononError::InvalidSampleRate(0));
   }
   if buffer.sample_rate == target_sample_rate {
@@ -127,19 +137,32 @@ pub fn resample_linear(buffer: &AudioBuffer, target_sample_rate: u32) -> Result<
 
   let ratio = buffer.sample_rate as f64 / target_sample_rate as f64;
   let old_len = buffer.samples.len() / ch;
-  let new_len = (old_len as f64 / ratio).ceil() as usize;
+  if old_len == 0 {
+    return Ok(AudioBuffer::new(target_sample_rate, buffer.channels, 0));
+  }
+  let new_len_f64 = (old_len as f64 / ratio).ceil();
+  let max_samples = (isize::MAX as usize) / std::mem::size_of::<f32>();
+  if !new_len_f64.is_finite() || new_len_f64 > (max_samples / ch) as f64 {
+    return Err(PhononError::InvalidParam(
+      "Resampled buffer size exceeds capacity limits".to_string(),
+    ));
+  }
+  let new_len = new_len_f64 as usize;
+  let total_samples = new_len
+    .checked_mul(ch)
+    .ok_or_else(|| PhononError::InvalidParam("Resampled buffer size overflow".to_string()))?;
 
-  let mut new_samples = Vec::with_capacity(new_len * buffer.channels as usize);
+  let mut new_samples = Vec::with_capacity(total_samples);
 
   for i in 0..new_len {
     let old_idx_float = i as f64 * ratio;
-    let old_idx_floor = old_idx_float.floor() as usize;
+    let old_idx_floor = (old_idx_float.floor() as usize).min(old_len - 1);
     let old_idx_ceil = (old_idx_floor + 1).min(old_len - 1);
-    let t = (old_idx_float - old_idx_floor as f64) as f32;
+    let t = (old_idx_float - old_idx_floor as f64).clamp(0.0, 1.0) as f32;
 
-    for ch in 0..buffer.channels as usize {
-      let s1 = buffer.samples[old_idx_floor * buffer.channels as usize + ch];
-      let s2 = buffer.samples[old_idx_ceil * buffer.channels as usize + ch];
+    for c in 0..ch {
+      let s1 = buffer.samples[old_idx_floor * ch + c];
+      let s2 = buffer.samples[old_idx_ceil * ch + c];
       let sample = s1 + (s2 - s1) * t;
       new_samples.push(sample);
     }
@@ -370,5 +393,29 @@ mod tests {
       channels: 1,
     };
     assert!(resample(&buffer, 0).is_err());
+  }
+
+  #[test]
+  fn test_resample_zero_source_sample_rate_errors() {
+    let buffer = AudioBuffer {
+      samples: vec![0.25; 16],
+      sample_rate: 0,
+      channels: 1,
+    };
+    assert!(resample(&buffer, 16_000).is_err());
+    assert!(resample_linear(&buffer, 16_000).is_err());
+  }
+
+  #[test]
+  fn test_resample_linear_rounding_boundary_no_panic() {
+    // IEEE 754 rounding previously pushed old_idx_floor == old_len on the final frame.
+    let buffer = AudioBuffer {
+      samples: vec![0.5; 11],
+      sample_rate: 11,
+      channels: 1,
+    };
+    let out = resample_linear(&buffer, 32_000).unwrap();
+    assert!(!out.samples.is_empty());
+    assert!(out.samples.iter().all(|s| s.is_finite()));
   }
 }

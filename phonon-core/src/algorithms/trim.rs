@@ -30,6 +30,11 @@ use crate::{AudioBuffer, PhononError, Result};
 /// ```
 pub fn trim(buffer: &AudioBuffer, start_secs: f64, end_secs: f64) -> Result<AudioBuffer> {
   let ch = buffer.frame_stride()?;
+  if !start_secs.is_finite() || !end_secs.is_finite() {
+    return Err(PhononError::InvalidParam(
+      "Trim times must be finite".to_string(),
+    ));
+  }
   if start_secs < 0.0 || end_secs < 0.0 {
     return Err(PhononError::Wav("Time cannot be negative".to_string()));
   }
@@ -160,5 +165,17 @@ mod tests {
     // Buffer is 1s, trim 0.0-5.0 should clamp to 0.0-1.0
     let trimmed = trim(&buffer, 0.0, 5.0).unwrap();
     assert_eq!(trimmed.samples.len(), 100);
+  }
+
+  #[test]
+  fn test_trim_nan_and_inf_error() {
+    let buffer = AudioBuffer {
+      samples: vec![1.0; 100],
+      sample_rate: 100,
+      channels: 1,
+    };
+    assert!(trim(&buffer, 0.5, f64::NAN).is_err());
+    assert!(trim(&buffer, f64::NAN, 0.5).is_err());
+    assert!(trim(&buffer, 0.0, f64::INFINITY).is_err());
   }
 }

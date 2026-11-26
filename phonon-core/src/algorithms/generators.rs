@@ -52,18 +52,30 @@ pub fn generate_signal(
       "Sample rate must be > 0".to_string(),
     ));
   }
-  if duration_secs < 0.0 {
+  if !duration_secs.is_finite() || duration_secs < 0.0 {
     return Err(PhononError::InvalidParam(
-      "Duration must be >= 0".to_string(),
+      "Duration must be finite and >= 0".to_string(),
     ));
   }
-  if frequency < 0.0 {
+  if !frequency.is_finite() || frequency < 0.0 {
     return Err(PhononError::InvalidParam(
-      "Frequency must be >= 0".to_string(),
+      "Frequency must be finite and >= 0".to_string(),
+    ));
+  }
+  if !amplitude.is_finite() {
+    return Err(PhononError::InvalidParam(
+      "Amplitude must be finite".to_string(),
     ));
   }
 
-  let total_samples = (duration_secs * sample_rate as f64) as usize;
+  let total_f64 = duration_secs * sample_rate as f64;
+  let max_samples = (isize::MAX as usize) / std::mem::size_of::<f32>();
+  if !total_f64.is_finite() || total_f64 > max_samples as f64 {
+    return Err(PhononError::InvalidParam(
+      "Duration exceeds buffer capacity limits".to_string(),
+    ));
+  }
+  let total_samples = total_f64 as usize;
   let amplitude = amplitude.clamp(0.0, 1.0);
 
   let samples = match waveform {
@@ -258,5 +270,13 @@ mod tests {
       crossings, 20,
       "10Hz sine should cross zero 20 times in 1s, got {crossings}"
     );
+  }
+
+  #[test]
+  fn test_generate_signal_nan_and_inf_error() {
+    assert!(generate_signal(Waveform::Sine, 440.0, f64::NAN, 44100, 1.0).is_err());
+    assert!(generate_signal(Waveform::Sine, 440.0, f64::INFINITY, 44100, 1.0).is_err());
+    assert!(generate_signal(Waveform::Sine, f64::NAN, 1.0, 44100, 1.0).is_err());
+    assert!(generate_signal(Waveform::Sine, 440.0, 1.0, 44100, f32::NAN).is_err());
   }
 }

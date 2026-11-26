@@ -36,7 +36,7 @@ pub(crate) struct Coefficients {
 ///
 /// # Returns
 ///
-/// None. Modifies the buffer in place.
+/// `Ok(())` after modifying the buffer in place.
 pub fn filter(
   buffer: &mut AudioBuffer,
   filter_type: FilterType,
@@ -60,6 +60,27 @@ pub(crate) fn calculate_coefficients(
   q: f64,
   gain_db: f64,
 ) -> Coefficients {
+  // Unity bypass whenever the requested filter is undefined or at/above Nyquist;
+  // otherwise w0 >= pi flips sin(w0) <= 0 and pushes poles outside the unit circle.
+  let bypass = Coefficients {
+    b0: 1.0,
+    b1: 0.0,
+    b2: 0.0,
+    a1: 0.0,
+    a2: 0.0,
+  };
+  if !sample_rate.is_finite()
+    || sample_rate <= 0.0
+    || !cutoff_hz.is_finite()
+    || cutoff_hz <= 0.0
+    || cutoff_hz >= sample_rate * 0.5
+    || !q.is_finite()
+    || q <= 0.0
+    || !gain_db.is_finite()
+  {
+    return bypass;
+  }
+
   let w0 = 2.0 * PI * cutoff_hz / sample_rate;
   let cos_w0 = w0.cos();
   let sin_w0 = w0.sin();
@@ -136,6 +157,10 @@ pub(crate) fn calculate_coefficients(
     }
   };
 
+  if !a0.is_finite() || a0.abs() < 1e-18 {
+    return bypass;
+  }
+
   // Normalize coefficients by a0
   Coefficients {
     b0: b0 / a0,
@@ -192,5 +217,33 @@ mod tests {
       val,
       val_next
     );
+  }
+
+  #[test]
+  fn test_above_nyquist_and_invalid_params_bypass_without_divergence() {
+    use crate::plugin::{DspPlugin, ParametricEqPlugin};
+
+    // 16 kHz speech through 5-band ParametricEqPlugin (band 4 is 12 kHz > 8 kHz Nyquist).
+    // Before the Nyquist guard, poles moved outside the unit circle and blew up to Inf/NaN.
+    let mut eq = ParametricEqPlugin::new();
+    let mut samples: Vec<f32> = (0..4000)
+      .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16_000.0).sin() * 0.5)
+      .collect();
+    eq.process(&mut samples, 16_000, 1);
+    assert!(
+      samples.iter().all(|s| s.is_finite() && s.abs() <= 1.0),
+      "16 kHz EQ output diverged"
+    );
+
+    // Invalid Q / sample rate / NaN gain must also stay finite.
+    let mut buf = AudioBuffer {
+      samples: vec![0.25; 128],
+      sample_rate: 16_000,
+      channels: 1,
+    };
+    filter(&mut buf, FilterType::Peaking, 12_000.0, 1.0, 6.0).unwrap();
+    filter(&mut buf, FilterType::LowPass, 1_000.0, 0.0, 0.0).unwrap();
+    filter(&mut buf, FilterType::Peaking, 1_000.0, 1.0, f64::NAN).unwrap();
+    assert!(buf.samples.iter().all(|s| s.is_finite()));
   }
 }
