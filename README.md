@@ -11,14 +11,14 @@ Phonon is organized as a Rust workspace with the following crates:
 | `phonon-core` | Core audio buffer, DSP algorithms (mix, resample, normalize, FFT, compressor, etc.) |
 | `phonon-wav` | WAV file reading and writing (16-bit PCM) |
 | `phonon-io` | Multi-format audio I/O — read any format via Symphonia, write WAV/MP3/FLAC/OGG (and AAC behind the `aac` feature) |
-| `phonon-engine` | Real-time audio playback with pause/resume/seek/volume, streaming support, and a `DspPlugin` effect chain |
-| `phonon-ai` | AI integrations — TTS (OpenAI, Edge, ElevenLabs, MiniMax), STT (Whisper), sound generation |
-| `phonon-podcast` | Podcast generation pipeline — script → TTS → assembly with chapters & subtitles |
+| `phonon-engine` | Real-time audio playback & microphone capture (`AudioPlayer` / `AudioRecorder`) with pause/resume/seek/volume, streaming, VU meter, and `DspPlugin` effect chain |
+| `phonon-ai` | Multi-vendor BYOK AI integrations — TTS/STT/LLM presets for MiniMax, Qwen, GLM, StepFun, DeepSeek, OpenAI, ElevenLabs, Edge + custom `phonon.toml` & `CachingTts` |
+| `phonon-podcast` | Podcast generation pipeline — script → TTS/recorded segments → BS.1770 LUFS assembly with chapters & subtitles |
 | `phonon-video` | Video audio track extraction/replacement via ffmpeg |
 | `phonon-server` | REST API server (axum) exposing TTS and podcast generation |
-| `phonon-mcp` | MCP (Model Context Protocol) server — exposes audio tools to LLM agents over JSON-RPC stdio |
+| `phonon-mcp` | MCP (Model Context Protocol) server — 23 audio DSP, voice enhancement & atomic Studio project co-editing tools over JSON-RPC stdio |
 | `phonon-wasm` | WebAssembly bindings — run phonon-core in the browser via wasm-bindgen |
-| `phonon-studio` | Desktop GUI application (Dioxus 0.7) with spectrum visualization, EQ panel, drag & drop |
+| `phonon-studio` | Desktop AI Podcast & Voice Studio (Dioxus 0.7 + Tailwind v4) — script-driven podcast desk, in-app mic recording, text-based audio cutting, local voice enhance, MCP live sync & Audio Lab |
 | `phonon-cli` | Command-line interface |
 | `phonon-tests` | Cross-crate integration tests (not published) |
 
@@ -56,17 +56,17 @@ For copy-pasteable recipes (CLI / Rust / REST / MCP / Wasm), see the
 - Loudness measurement: peak, RMS, dBFS
 - **LUFS / EBU R128** — integrated, short-term, momentary, LRA, true peak (dBTP),
   with `normalize_lufs` for podcast-spec output (-16 LUFS / -1 dBTP)
+- **Local Voice Enhancement & Splicing** — pure-Rust STFT spectral denoiser (`denoise_spectral`), broadcast voice chain (`enhance_voice`), offline RMS speech VAD (`detect_speech_regions`), and raised-cosine range splicing (`splice_ranges`)
 - Plugin architecture (DspPlugin trait, PluginRegistry, 5 built-in plugins)
 - Parallel processing via rayon (auto-threshold, optional via `parallel` feature)
 - SIMD optimization (NEON / SSE) for hot kernels (optional via `simd` feature)
 
 ### AI Integration (phonon-ai)
-- **TTS**: OpenAI, Microsoft Edge TTS, ElevenLabs, MiniMax (T2A v2)
-- **STT**: OpenAI Whisper (with timed segments)
-- **Sound Generation**: Generic HTTP provider + Replicate-flavored async polling
+- **Configurable Providers (`Config` + `phonon.toml`)**: built-in presets for MiniMax, Qwen (DashScope), GLM (Zhipu), StepFun, DeepSeek, OpenAI, ElevenLabs, Microsoft Edge TTS, plus any OpenAI-compatible self-hosted server (vLLM, Ollama, Kokoro-FastAPI, speaches)
+- **TTS & STT**: automatic sentence chunking for long text and duration chunking for long audio; retry with jitter
+- **Sound Generation**: Generic HTTP provider + Replicate async polling with SSRF & size guards
 - Streaming TTS (PCM chunked HTTP for OpenAI / ElevenLabs)
-- **Filesystem cache** (`CachingTts`) — content-addressable, blake3-keyed,
-  decorator over any `TtsProvider`
+- **Atomic filesystem cache** (`CachingTts`) — content-addressable, blake3-keyed with provider/model/format fingerprinting
 
 ### Podcast Pipeline (phonon-podcast)
 - JSON script → multi-speaker podcast generation
@@ -102,11 +102,14 @@ The server has no authentication and binds `127.0.0.1:3000` by default
 
 ### MCP Server (phonon-mcp)
 JSON-RPC 2.0 over stdio — drives Phonon from Claude Desktop, Cursor, or any
-MCP-aware LLM agent. 14 built-in tools covering load/save/info, mix/trim/fade,
-normalize (peak + LUFS), volume_db, pan, resample, and full BS.1770 loudness
-measurement. Audio buffers cross the JSON boundary as UUID handles into an
-in-memory asset registry — no PCM data on the wire. `audio_load` /
-`audio_save` are confined to `PHONON_MCP_ROOT` (default: the launch directory).
+MCP-aware LLM agent. **23 built-in tools** covering asset load/save/info,
+mix/trim/fade/normalize/LUFS/volume/pan/resample, parametric EQ (`audio_eq`),
+compressor (`audio_compress`), local voice enhancement (`audio_enhance_voice`),
+range splicing (`audio_splice`), BS.1770 loudness measurement, and 5 atomic
+`studio_*` co-editing tools for live Phonon Studio synchronization. Audio
+buffers cross the JSON boundary as UUID handles into an in-memory asset
+registry — no PCM data on the wire. File access is confined to
+`PHONON_MCP_ROOT` (default: the launch directory).
 
 ```bash
 cargo run -p phonon-mcp --bin phonon-mcp
@@ -134,8 +137,11 @@ Full per-tool input/output schema: [`docs/mcp-tools.md`](./docs/mcp-tools.md).
   `DEEPSEEK_API_KEY`, `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `REPLICATE_API_TOKEN` —
   providers are chosen by config, see [docs/providers.md](./docs/providers.md)
 
-MP3 encoding statically links LAME (**LGPL-3.0**); AAC encoding is opt-in
-because libfdk-aac's license is not OSI-approved. See [`phonon-io/README.md`](./phonon-io/README.md).
+MP3 (`mp3` feature, LAME **LGPL-3.0**) and OGG Vorbis (`ogg` feature) encoders
+are enabled by default in `phonon-io`; pass `default-features = false` for a
+pure-Rust MIT/Apache-2.0 dependency tree (WAV/FLAC encode + Symphonia decode).
+AAC encoding (`aac` feature) is opt-in because libfdk-aac's license is not
+OSI-approved. See [`phonon-io/README.md`](./phonon-io/README.md).
 
 ## License
 

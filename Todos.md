@@ -295,3 +295,10 @@
 - [x] **P2-3** `phonon-studio` Phase 2 内核：段落录音挂载与 STT 词/句对齐（无 Key 自动退化为离线静音切分）、口癖自动识别、非破坏性裁剪 + 语音增强接入拼装管线、MCP 文件热同步逻辑 + 单元测试
 - [x] **P2-4** `phonon-studio` Phase 2 界面：段内「改文本即剪音频」可点击词条/一键删口癖/录音增强开关、Audio Lab 一键播音腔与自动去静音、顶栏 MCP Live Sync 与配置面板
 - [x] **P2-5** Tailwind v4 构建、全工作区质量门禁与文档更新（`studio-architecture.md`、`mcp-tools.md`、`Todos.md`）
+
+## v0.9.0 收官 — 应用内麦克风直录、生态补齐与 CI/发布准备
+
+- [x] **R1** `phonon-engine` 实时麦克风采集：`AudioRecorder`（支持 F32/I16/U16、无锁原子 VU 峰值与时长、30 分钟上限、帧对齐与无硬件单测）
+- [x] **R2** `phonon-studio` 应用内直录集成：播客分段直录（`● Record Mic` / `■ Stop & Attach` 实时红灯 VU 电平条、原子落盘至 `recordings/` 并自动对齐增强）+ Audio Lab 顶栏直录
+- [x] **R3** `phonon-mcp` 补齐 `audio_eq` / `audio_compress`（工具总数达 23 个）与 `phonon-io` 的 `mp3` / `ogg` 可选 C 编码器 feature 隔离（支持 `--no-default-features` 纯 Rust MIT/Apache-2.0 构建）
+- [x] **R4** `phonon-tests` 清单清理与跨 crate 集成测试扩展（FLAC/OGG 标签回读、Phase 2 端到端语音管线、MCP 异步双工 stdio 23 工具测试）、CI 新增 `build-studio` 与纯 Rust `phonon-io` 检查，以及 workspace `0.9.0` 版本号与发布文档同步

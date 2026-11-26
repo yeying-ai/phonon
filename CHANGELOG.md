@@ -3,6 +3,31 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## v0.9.0 - 2026-11-26 — Phonon Studio AI Podcast Desktop, Local Voice Engine & Security Hardening
+
+### Added
+
+- **Phonon Studio Desktop (`phonon-studio`)** — rebuilt in-place with Dioxus 0.7 + Tailwind CSS v4 as a dual-workspace desktop app (**AI Podcast Studio** + **Audio Lab**):
+  - Multi-vendor BYOK AI provider selector (`minimax`, `qwen`, `glm`, `stepfun`, `deepseek`, `openai`, `elevenlabs`, `edge`, custom `phonon.toml`) with env-key readiness indicators and verified voice presets.
+  - Project IR (`StudioProject` v1, backwards-compatible with CLI `PodcastScript` JSON), bounded Undo/Redo history, AI script drafting from topic, per-segment `CachingTts` preview/regenerate, Show & BS.1770-4 LUFS mastering, waveform/LUFS/dBTP inspector, click-to-seek chapters, SRT preview, ID3/Vorbis tags + cover art, and multi-format export.
+  - **Text-driven audio cutting ("改文本即剪音频")**: attach or record human voice per segment, align via `phonon-ai` STT (with automatic offline 20ms RMS VAD fallback), auto-detect Chinese/English fillers, click text chips to cut/restore non-destructively via raised-cosine micro-crossfades, and mix human + AI TTS segments in one episode.
+  - **In-app microphone recording (`phonon-engine::AudioRecorder`)**: real-time `cpal` input capture (F32/I16/U16) with lock-free VU peak meter, 30-minute memory cap, atomic WAV save under `recordings/`, and one-click segment or Audio Lab recording.
+  - **Local MCP Live Co-Editing**: 500ms project file watcher hot-reloads external `phonon-mcp` atomic edits directly onto Undo history without exposing local network ports.
+- **Pure-Rust voice DSP (`phonon-core`)**:
+  - `splice_ranges` (frame-aligned raised-cosine micro-crossfade splicing) and `detect_speech_regions` (windowed RMS VAD with gap bridging).
+  - `denoise_spectral` (minimum-statistics STFT Wiener spectral denoiser) and `enhance_voice` (80Hz HPF + STFT denoise + broadcast vocal presence EQ + compressor + optional BS.1770 LUFS mastering; presets `podcast_studio`, `noisy_room`, `clean_mic`).
+- **Expanded MCP server (`phonon-mcp`, 23 tools total)**: added `audio_enhance_voice`, `audio_splice`, `audio_eq`, `audio_compress`, and 5 `PHONON_MCP_ROOT`-confined atomic project tools (`studio_get_project`, `studio_edit_segment`, `studio_add_segment`, `studio_delete_segment`, `studio_set_mastering`).
+- **Optional C/LGPL encoder feature gates (`phonon-io`)**: `mp3` (LAME) and `ogg` (vorbis_rs) are now default-enabled Cargo features (`default = ["mp3", "ogg"]`); passing `default-features = false` yields a pure-Rust MIT/Apache-2.0 dependency tree (WAV/FLAC encode + Symphonia decode).
+- **Real-time plugin & pipeline seams**: `AudioPlayer::set_plugin_param`, `AudioPlayer::replace_plugins`, `DspPlugin::prepare`, `phonon_ai::builtin_presets`, `PipelineConfig.target_lufs`, and offline `render_episode_from_buffers`.
+
+### Security & Stability Fixes (v0.8.2 & v0.8.3)
+
+- **Soundness & DSP stability**: replaced unguarded SSE3 `_mm_movehdup_ps` with baseline SSE `_mm_shuffle_ps` and enforced `assert_eq!` in `simd_add_clamp`; guarded biquad filters above Nyquist / zero sample rate / non-positive Q (preventing `ParametricEqPlugin` blow-up on 16 kHz speech); fixed `resample`/`trim`/`overlay`/`silence`/`generators` zero-rate/NaN/Inf/overflow panics and `compressor` Inf→NaN propagation.
+- **SSRF, command injection & OOM bounds**: validated `QwenTts`/`ReplicateSoundGen` download URLs (public HTTPS, `api.replicate.com` poll pinning, 100 MiB streaming cap); hardened `phonon-video` `ffmpeg`/`ffprobe` (`-nostdin`, `Stdio::null()`, `-protocol_whitelist file,pipe`, `--`, timeouts, `kill_on_drop`); added `read_audio_limited`/`decode_audio_limited` decompression caps; bounded MCP line length (4 MiB) and resample rates; blocked `AssetSource::Generated` early and added concurrency/timeout layers in `phonon-server`.
+- **Reliability & performance**: atomic temp+rename `CachingTts` writes with provider/model/format cache fingerprinting; single-pass K-weighting in `measure_loudness` (~4× faster); reusable `SampleBuffer` in `phonon-io::decode`; streaming 8192-frame chunked `write_mp3`; retry jitter + `WhisperStt` retries; `AudioPlayer` `I16`/`U16` output support and race-free track switching; fixed Audio Lab live plugin sync, seek transport, paused-track resume, and plugin-baked export.
+- **CI & tests**: added `build-studio` and `phonon-io --no-default-features` CI verification, cleaned up manifest warnings, and expanded `phonon-tests` with FLAC/OGG tagged roundtrips, Phase 2 voice pipeline, and async MCP stdio wire framing tests.
+
+---
 ## v0.8.1 (unreleased) — fixes from a real episode run
 
 Items K1–K6 in [Todos.md](./Todos.md).

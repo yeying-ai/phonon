@@ -30,6 +30,8 @@
   真峰值相位、AAC 尾部、FLAC 回读、Edge TTS 恢复可用)
 - **v0.7.3**: 架构复评(压缩器插件 ratio 改为 dB 域、滤波插件全声道、内存解码 `decode_audio`、脚本生成重试)
 - **v0.8**: 模型 provider 可配置(MiniMax / Qwen / GLM / StepFun 预置 + OpenAI 兼容自部署;TTS 按字数、STT 按时长自动切分;播客分段按响度对齐),见 [docs/providers.md](./docs/providers.md)
+- **v0.8.2–v0.8.3**: 系统评估 P0/P1 安全与性能加固(SIMD Soundness、低采样率 EQ 稳定性、SSRF/ffmpeg/解压炸弹防护、`CachingTts` 原子写盘、LUFS 单遍提速、流式 MP3 编码与 `AudioPlayer` 实时安全)
+- **v0.9.0**: Phonon Studio 桌面 AI 播客工作台(三栏脚本制作 + Audio Lab 修复 + 文本剪音频 + 纯 Rust STFT 语音增强 + 应用内麦克风直录 + 23 工具 MCP 原子协同编辑 + `phonon-io` C 编码器 feature 隔离 + Studio CI 覆盖),见 [docs/studio-architecture.md](./docs/studio-architecture.md)
 
 ## v0.7 计划 — AI 播客生产就绪 + MCP 暴露
 
