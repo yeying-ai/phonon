@@ -167,8 +167,6 @@ pub async fn synthesize_segment(
   Ok(SegmentAudioEntry {
     fingerprint,
     duration_secs: buffer.duration_secs(),
-    sample_rate: buffer.sample_rate,
-    channels: buffer.channels,
     buffer: Arc::new(buffer),
   })
 }
@@ -178,7 +176,14 @@ pub async fn synthesize_segment(
 pub async fn assemble_episode(
   project: &StudioProject,
   existing_cache: &HashMap<usize, SegmentAudioEntry>,
-) -> Result<(Episode, HashMap<usize, SegmentAudioEntry>, EpisodeRenderView), String> {
+) -> Result<
+  (
+    Episode,
+    HashMap<usize, SegmentAudioEntry>,
+    EpisodeRenderView,
+  ),
+  String,
+> {
   project
     .script
     .validate()
@@ -252,8 +257,6 @@ pub async fn assemble_episode(
             SegmentAudioEntry {
               fingerprint: fp,
               duration_secs: buf.duration_secs(),
-              sample_rate: buf.sample_rate,
-              channels: buf.channels,
               buffer: Arc::new(buf),
             },
           ))
@@ -297,8 +300,6 @@ pub async fn assemble_episode(
             SegmentAudioEntry {
               fingerprint: fp,
               duration_secs: buf.duration_secs(),
-              sample_rate: buf.sample_rate,
-              channels: buf.channels,
               buffer: Arc::new(buf),
             },
           ))
@@ -607,8 +608,6 @@ mod tests {
         SegmentAudioEntry {
           fingerprint: fp,
           duration_secs: buf.duration_secs(),
-          sample_rate: buf.sample_rate,
-          channels: buf.channels,
           buffer: Arc::new(buf),
         },
       );
@@ -653,6 +652,10 @@ mod tests {
     .await
     .expect("export srt");
     assert!(std::fs::metadata(&mp3_path).expect("mp3 meta").len() > 1000);
-    assert!(std::fs::read_to_string(&srt_path).expect("srt").contains("-->"));
+    assert!(
+      std::fs::read_to_string(&srt_path)
+        .expect("srt")
+        .contains("-->")
+    );
   }
 }

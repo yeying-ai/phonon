@@ -491,8 +491,6 @@ impl ProjectHistory {
 pub struct SegmentAudioEntry {
   pub fingerprint: String,
   pub duration_secs: f64,
-  pub sample_rate: u32,
-  pub channels: u16,
   pub buffer: Arc<AudioBuffer>,
 }
 
@@ -672,10 +670,19 @@ mod tests {
     // Speaker CRUD.
     assert!(project.remove_speaker("host").is_err());
     project
-      .add_speaker("narrator".to_string(), VoiceConfig::new("zh-CN-XiaoyiNeural"))
+      .add_speaker(
+        "narrator".to_string(),
+        VoiceConfig::new("zh-CN-XiaoyiNeural"),
+      )
       .expect("add narrator");
-    assert!(project.add_speaker("narrator".to_string(), VoiceConfig::default()).is_err());
-    project.remove_speaker("narrator").expect("remove unused narrator");
+    assert!(
+      project
+        .add_speaker("narrator".to_string(), VoiceConfig::default())
+        .is_err()
+    );
+    project
+      .remove_speaker("narrator")
+      .expect("remove unused narrator");
   }
 
   #[test]

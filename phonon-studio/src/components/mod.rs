@@ -1,9 +1,11 @@
+pub mod audio_lab;
 pub mod effects_panel;
 pub mod eq_panel;
 pub mod export_panel;
 pub mod header;
 pub mod info_panel;
 pub mod plugin_browser;
+pub mod podcast_studio;
 pub mod spectrum;
 pub mod transport;
 pub mod waveform;

@@ -5,108 +5,103 @@ mod project;
 mod state;
 mod studio_ops;
 
+use components::{
+  audio_lab::AudioLabView, header::Header, podcast_studio::PodcastStudioView, transport::Transport,
+};
 use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 use dioxus_logger::tracing;
+use project::StudioProject;
+use state::{AppState, WorkspaceTab, load_audio};
+use std::collections::HashMap;
 
-use components::{
-  effects_panel::EffectsPanel, eq_panel::EqPanel, export_panel::ExportPanel, header::Header,
-  info_panel::InfoPanel, plugin_browser::PluginBrowser, transport::Transport,
-  waveform::WaveformView,
-};
-use state::{AppState, SidePanel, load_audio};
-
-/// Tailwind CSS asset for desktop and web
+/// Tailwind CSS asset for desktop
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 
 fn main() {
   if let Err(e) = dioxus_logger::init(tracing::Level::INFO) {
-    eprintln!("Failed to init logger: {}", e);
+    eprintln!("Failed to init logger: {e}");
   }
   launch(App);
 }
 
 fn App() -> Element {
-  // Provide global state via context
   let state = use_hook(AppState::init);
   use_context_provider(|| state);
 
   rsx! {
-      document::Stylesheet { href: TAILWIND_CSS }
-      div {
-          class: "flex flex-col h-dvh bg-neutral-900 text-gray-200 font-sans overflow-hidden",
+    document::Stylesheet { href: TAILWIND_CSS }
+    div {
+      class: "flex flex-col h-dvh bg-[#141619] text-[#ECEFF4] overflow-hidden",
 
-          // Drag-and-drop overlay
-          ondragover: move |evt| { evt.prevent_default(); },
-          ondrop: move |evt| {
-              evt.prevent_default();
-              let mut s = state;
-              async move {
-                  handle_drop(&mut s, evt).await;
-              }
-          },
+      // Global drag-and-drop: supports both .json scripts and audio files
+      ondragover: move |evt| { evt.prevent_default(); },
+      ondrop: move |evt| {
+        evt.prevent_default();
+        let mut s = state;
+        async move {
+          handle_drop(&mut s, evt).await;
+        }
+      },
 
-          // --- Header ---
-          Header {}
+      Header {}
 
-          // --- Main workspace ---
-          div {
-              class: "flex-1 flex overflow-hidden",
-
-              // Main content
-              main {
-                  class: "flex-1 flex flex-col items-center justify-start p-6 overflow-y-auto",
-
-                  if (state.display_info)().is_some() {
-                      WaveformView {}
-                      InfoPanel {}
-                  } else {
-                      div {
-                          class: "text-center text-gray-500 mt-16",
-                          h2 { class: "text-2xl font-bold mb-2", "No Audio Loaded" }
-                          p { "Click 'Open Audio File' or drag & drop an audio file to start." }
-                      }
-                  }
-              }
-
-              // Side panel
-              if (state.side_panel)() != SidePanel::None {
-                  aside {
-                      class: "w-80 bg-neutral-800 border-l border-neutral-700 p-4 overflow-y-auto flex flex-col gap-4",
-
-                      match (state.side_panel)() {
-                          SidePanel::Effects => rsx! { EffectsPanel {} },
-                          SidePanel::Eq => rsx! { EqPanel {} },
-                          SidePanel::Export => rsx! { ExportPanel {} },
-                          SidePanel::Plugins => rsx! { PluginBrowser {} },
-                          SidePanel::None => rsx! {},
-                      }
-                  }
-              }
-          }
-
-          // --- Transport ---
-          Transport {}
+      match (state.active_tab)() {
+        WorkspaceTab::PodcastStudio => rsx! { PodcastStudioView {} },
+        WorkspaceTab::AudioLab => rsx! { AudioLabView {} },
       }
+
+      Transport {}
+    }
   }
 }
 
-/// Handle drag-and-drop file loading.
+/// Handle drag-and-drop for both podcast script JSON files and raw audio files.
 async fn handle_drop(state: &mut AppState, evt: Event<DragData>) {
   let file_list = evt.data().files();
   let Some(first_file) = file_list.first() else {
     return;
   };
   let first_name = first_file.name();
-
   let path_lower = first_name.to_lowercase();
-  let supported = ["wav", "mp3", "flac", "ogg", "aac", "m4a", "mp4"];
-  let is_audio = supported.iter().any(|ext| path_lower.ends_with(ext));
-  if !is_audio {
-    state.status_msg.set("Unsupported file format".to_string());
+  let path_buf = std::path::PathBuf::from(&first_name);
+
+  if path_lower.ends_with(".json") {
+    let read_path = path_buf.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+      let raw = std::fs::read_to_string(&read_path)
+        .map_err(|e| format!("Failed to read '{}': {e}", read_path.display()))?;
+      StudioProject::from_json(&raw)
+    })
+    .await;
+    match loaded {
+      Ok(Ok(proj)) => {
+        let count = proj.script.segments.len();
+        state.project.set(proj);
+        state.history.write().clear();
+        state.project_path.set(Some(path_buf));
+        state.segment_audio.set(HashMap::new());
+        state.rendered_episode.set(None);
+        state.episode_view.set(None);
+        state.active_tab.set(WorkspaceTab::PodcastStudio);
+        state.status_msg.set(format!(
+          "Imported script ({count} segments) via drag & drop"
+        ));
+      }
+      Ok(Err(e)) => state.status_msg.set(format!("Invalid script JSON: {e}")),
+      Err(e) => state.status_msg.set(format!("Task error: {e}")),
+    }
     return;
   }
 
-  let path_buf = std::path::PathBuf::from(&first_name);
+  let supported = ["wav", "mp3", "flac", "ogg", "aac", "m4a", "mp4"];
+  if !supported.iter().any(|ext| path_lower.ends_with(ext)) {
+    state
+      .status_msg
+      .set("Unsupported file format (drop .json script or audio file)".to_string());
+    return;
+  }
+
+  state.active_tab.set(WorkspaceTab::AudioLab);
   load_audio(state, path_buf, "File loaded (drag & drop)").await;
 }

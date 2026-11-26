@@ -1,2 +1,32 @@
 @import "tailwindcss";
 @source "../src/**/*.{rs,html,css}";
+
+@layer base {
+  html,
+  body {
+    background-color: #141619;
+    color: #eceff4;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", "Inter", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Subtle dark scrollbars matching the studio console surfaces */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #141619;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #2d333c;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3d4652;
+  }
+}
