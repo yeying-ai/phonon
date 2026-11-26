@@ -91,20 +91,20 @@ phonon/
 ├── phonon-server/          # REST API 服务 (axum,默认仅监听 127.0.0.1)
 ├── phonon-mcp/             # MCP server (JSON-RPC stdio,文件访问限定在 PHONON_MCP_ROOT)
 ├── phonon-wasm/            # WebAssembly 绑定 (wasm-bindgen + demo)
-├── phonon-studio/          # 桌面 GUI (Dioxus 0.7)
+├── phonon-studio/          # 桌面 GUI (Dioxus 0.7 + dioxus-shadcn 0.8)
 │   └── src/
 │       ├── main.rs
 │       ├── state.rs        # 全局状态 (AppState)
-│       └── components/     # UI 组件 (waveform, spectrum, eq, export, ...)
+│       └── components/     # UI 组件 (podcast_studio/, audio_lab, header, transport, ...)
 ├── phonon-cli/             # 命令行工具
 └── phonon-tests/           # 集成测试
 ```
 
 ## 当前开发阶段
 
-**已完成**: v0.1 (WAV) → v0.2 (pydub等价) → v0.3 (播客Agent) → v0.4 (STT/字幕/视频/Server) → v0.5 (sinc resampler/多格式/EffectChain/CI) → v0.6 (EQ/rayon/Studio UI/Wasm/Plugin) → v0.7 (LUFS/MP3+FLAC+OGG tags/Pan/TTS cache/AI BGM 接管线/Episode export/MCP server) → v0.8 (可配置模型 provider + P0/P1 安全与性能加固) → **v0.9.0 (Phonon Studio 桌面 AI 播客工作台、应用内录音、文本剪音频、纯 Rust 语音增强、23 工具 MCP 联动与纯 Rust `phonon-io` feature 隔离)**
+**已完成**: v0.1 (WAV) → v0.2 (pydub等价) → v0.3 (播客Agent) → v0.4 (STT/字幕/视频/Server) → v0.5 (sinc resampler/多格式/EffectChain/CI) → v0.6 (EQ/rayon/Studio UI/Wasm/Plugin) → v0.7 (LUFS/MP3+FLAC+OGG tags/Pan/TTS cache/AI BGM 接管线/Episode export/MCP server) → v0.8 (可配置模型 provider + P0/P1 安全与性能加固) → v0.9.0 (Phonon Studio 桌面 AI 播客工作台、应用内录音、文本剪音频、纯 Rust 语音增强、23 工具 MCP 联动与纯 Rust `phonon-io` feature 隔离) → **v0.10.0 (Phonon Studio 全面迁移至 `dioxus-shadcn 0.8.0`、三栏可调工作台、`UiDensity::Compact` 与 `Slider::on_value_commit` 单次 Undo)**
 
-**当前版本**: v0.9.0（架构说明见 [docs/studio-architecture.md](./docs/studio-architecture.md)、供应商实测见 [docs/providers.md](./docs/providers.md)）
+**当前版本**: v0.10.0（架构说明见 [docs/studio-architecture.md](./docs/studio-architecture.md)、供应商实测见 [docs/providers.md](./docs/providers.md)）
 
 **phonon-core 特性**:
 - `features = ["parallel", "simd"]`(默认开启)— rayon 并行 + NEON/SSE SIMD,其他架构走标量

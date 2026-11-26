@@ -3,6 +3,20 @@
 All notable changes to this project will be documented in this file. See [conventional commits](https://www.conventionalcommits.org/) for commit guidelines.
 
 ---
+## v0.10.0 - 2026-11-26 — Phonon Studio UI Migration to `dioxus-shadcn 0.8.0`
+
+### Changed
+
+- **Phonon Studio UI Architecture (`phonon-studio`)** — migrated the entire desktop workstation (`Header`, `Transport`, `AudioLab`, `WaveformView`, `InfoPanel`, `EffectsPanel`, `EqPanel`, `PluginBrowser`, `ExportPanel`, and `PodcastStudioView`) onto published crates.io `dioxus-shadcn 0.8.0` (Crate Mode with 17 opted-in component features + `dxui 0.8.0` Tailwind v4 `@source` wiring) with Broadcast Mastering Console dark theme tokens mapped to RFC 0051 semantic CSS variables.
+- **Modular Podcast Studio Desk**: split the 1,917-line monolithic `podcast_studio.rs` into five cohesive submodules (`components/podcast_studio/{mod,left_rail,script_desk,episode_inspector,actions}.rs`), adding a 3-pane `ResizablePanelGroup` workspace, `Dialog` modals for AI Script Drafting and MCP Live Sync, `TabsVariant::Underline` inspector tabs, and a global `Sonner` toast notification queue.
+- **Desktop Workstation Ergonomics (`dioxus-shadcn 0.8.0`)**: enabled global `DensityProvider(UiDensity::Compact)`, adopted `NativeSelectSize::Sm` across compact toolbar/inspector selectors, and wired `Slider::on_value_commit` on mastering and speaker-speed sliders so pointer drags and keyboard steps each record a single clean Undo snapshot.
+- **MSRV**: set `phonon-studio` crate `rust-version = "1.88"` to match `dioxus-shadcn 0.8.0` (workspace libraries remain `1.85`).
+
+### Fixed
+
+- **Studio CI (`build-studio`)**: updated Ubuntu desktop apt dependencies in `.github/workflows/build.yml` (`libxdo-dev`, `libayatana-appindicator3-dev`, `libssl-dev`) so `phonon-studio` compiles, lints, and passes unit tests in GitHub Actions.
+
+---
 ## v0.9.0 - 2026-11-26 — Phonon Studio AI Podcast Desktop, Local Voice Engine & Security Hardening
 
 ### Added

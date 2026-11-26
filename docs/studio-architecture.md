@@ -1,4 +1,4 @@
-# Phonon Studio Desktop Architecture (v0.9)
+# Phonon Studio Desktop Architecture (v0.10)
 
 ## 1. Product Positioning & Scope
 
@@ -24,6 +24,8 @@ Phonon Studio is positioned as a **local-first, multi-vendor BYOK AI Podcast & V
 - **Phase 3 (Implemented — v0.9.0 Complete)**:
   - **In-App Microphone Recording**: `phonon_engine::AudioRecorder` captures `F32`/`I16`/`U16` input with a lock-free atomic VU peak meter and 30-minute memory cap; both Podcast Studio segments (`● Record Mic` / `■ Stop & Attach` → atomic save under `<project_dir>/recordings/` → auto-enhance + auto-align) and Audio Lab (`● Record` / `■ Stop`) support one-click direct recording.
   - **Ecosystem & CI Hardening**: `phonon-mcp` reaches 23 tools with `audio_eq` and `audio_compress`; `phonon-io` gates C/LGPL codecs behind default `mp3`/`ogg` features (`default-features = false` compiles a pure-Rust MIT/Apache-2.0 tree); GitHub Actions runs a dedicated `build-studio` job plus `phonon-io --no-default-features` verification.
+- **Phase 4 (Implemented — v0.10.0 Complete)**:
+  - **`dioxus-shadcn 0.8.0` Component System & Modular Desk**: Migrated every desktop view onto published crates.io `dioxus-shadcn 0.8.0` (17 opted-in features + `dxui 0.8.0` Tailwind v4 `@source` wiring) inside a global `DensityProvider(UiDensity::Compact)`, decomposed `podcast_studio.rs` into five focused modules with a 3-pane `ResizablePanelGroup`, `Dialog` modals, `TabsVariant::Underline`, `NativeSelectSize::Sm`, global `Sonner` toasts, and single-entry Undo commits via `Slider::on_value_commit`.
 
 ## 2. Minimal Backend Seams
 

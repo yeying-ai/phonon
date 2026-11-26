@@ -18,7 +18,7 @@ Phonon is organized as a Rust workspace with the following crates:
 | `phonon-server` | REST API server (axum) exposing TTS and podcast generation |
 | `phonon-mcp` | MCP (Model Context Protocol) server — 23 audio DSP, voice enhancement & atomic Studio project co-editing tools over JSON-RPC stdio |
 | `phonon-wasm` | WebAssembly bindings — run phonon-core in the browser via wasm-bindgen |
-| `phonon-studio` | Desktop AI Podcast & Voice Studio (Dioxus 0.7 + Tailwind v4) — script-driven podcast desk, in-app mic recording, text-based audio cutting, local voice enhance, MCP live sync & Audio Lab |
+| `phonon-studio` | Desktop AI Podcast & Voice Studio (Dioxus 0.7 + `dioxus-shadcn 0.8` + Tailwind v4) — script-driven podcast desk, in-app mic recording, text-based audio cutting, local voice enhance, MCP live sync & Audio Lab |
 | `phonon-cli` | Command-line interface |
 | `phonon-tests` | Cross-crate integration tests (not published) |
 

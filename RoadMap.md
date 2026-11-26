@@ -16,7 +16,7 @@
 
 数据源项目通过 MCP 协议消费 phonon 的能力,本项目专注于"声音"。
 
-## 已交付能力(v0.1 → v0.7)
+## 已交付能力(v0.1 → v0.10)
 
 - **v0.1**: WAV 读写 + AudioBuffer
 - **v0.2**: pydub 等价(overlay/reverse/repeat/dBFS)+ MP3 输出 + Edge TTS + 并发合成
@@ -32,6 +32,7 @@
 - **v0.8**: 模型 provider 可配置(MiniMax / Qwen / GLM / StepFun 预置 + OpenAI 兼容自部署;TTS 按字数、STT 按时长自动切分;播客分段按响度对齐),见 [docs/providers.md](./docs/providers.md)
 - **v0.8.2–v0.8.3**: 系统评估 P0/P1 安全与性能加固(SIMD Soundness、低采样率 EQ 稳定性、SSRF/ffmpeg/解压炸弹防护、`CachingTts` 原子写盘、LUFS 单遍提速、流式 MP3 编码与 `AudioPlayer` 实时安全)
 - **v0.9.0**: Phonon Studio 桌面 AI 播客工作台(三栏脚本制作 + Audio Lab 修复 + 文本剪音频 + 纯 Rust STFT 语音增强 + 应用内麦克风直录 + 23 工具 MCP 原子协同编辑 + `phonon-io` C 编码器 feature 隔离 + Studio CI 覆盖),见 [docs/studio-architecture.md](./docs/studio-architecture.md)
+- **v0.10.0**: Phonon Studio UI 全面迁移至 crates.io `dioxus-shadcn 0.8.0`(Crate Mode 17 个按需特性 + `dxui 0.8.0` + RFC 0051 语义暗色 Token + 三栏 `ResizablePanelGroup` + `UiDensity::Compact` + `Slider::on_value_commit` 单次 Undo + `podcast_studio/` 模块化拆分 + Studio CI 绿灯)
 
 ## v0.7 计划 — AI 播客生产就绪 + MCP 暴露
 
@@ -91,7 +92,7 @@
 
 已完成:流式 TTS、EffectChain 统一到 `DspPlugin`(v0.7.1 删除了 `AudioEffect`)、wasm-pack demo。
 
-- crates.io 暂不发布(`phonon` 已被无关项目占用,见 docs/publishing.md);v0.7.0 / v0.7.3 / v0.8.0 已打 tag
+- crates.io 暂不发布(`phonon` 已被无关项目占用,见 docs/publishing.md);v0.7.0 / v0.7.3 / v0.8.0 / v0.9.0 / v0.10.0 已打 tag
 - VST3 / CLAP 兼容层 —— v0.7.1 删除了无 FFI 的 `phonon-plugin` 骨架;
   **重估条件**:出现需要加载 Phonon 插件的真实宿主
 
@@ -104,4 +105,4 @@
 
 ---
 
-**最后更新**: 2026-10-20
+**最后更新**: 2026-11-26

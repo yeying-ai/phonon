@@ -303,7 +303,7 @@
 - [x] **R3** `phonon-mcp` 补齐 `audio_eq` / `audio_compress`（工具总数达 23 个）与 `phonon-io` 的 `mp3` / `ogg` 可选 C 编码器 feature 隔离（支持 `--no-default-features` 纯 Rust MIT/Apache-2.0 构建）
 - [x] **R4** `phonon-tests` 清单清理与跨 crate 集成测试扩展（FLAC/OGG 标签回读、Phase 2 端到端语音管线、MCP 异步双工 stdio 23 工具测试）、CI 新增 `build-studio` 与纯 Rust `phonon-io` 检查，以及 workspace `0.9.0` 版本号与发布文档同步
 
-## v0.10.0 — Phonon Studio UI 迁移至 `dioxus-shadcn`（双仓双向验证）
+## v0.10.0 — Phonon Studio UI 迁移至 `dioxus-shadcn`（双仓双向验证） ✅ 已完成
 
 > 规划见 `studio_dioxus_shadcn_migration_plan.md`。坚持直接消费 crates.io 已发布的 `dioxus-shadcn` (`0.7.0+`) 与 `dxui` CLI；若在真实 Desktop WebView 迁移与验收中发现上游缺陷，先在 `/Users/hal/arch/dioxus-ui` 撰写 RFC 与 `TODOs.md`（`M226+`），按其发版流程推送到 crates.io 后再回到 `phonon-studio` 升级验收。
 

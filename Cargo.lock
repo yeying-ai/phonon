@@ -4108,7 +4108,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-ai"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "base64 0.22.1",
  "blake3",
@@ -4133,7 +4133,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-cli"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -4152,7 +4152,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-core"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "criterion",
  "num-complex",
@@ -4165,7 +4165,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-engine"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "cpal",
  "phonon-core",
@@ -4176,7 +4176,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-io"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "fdk-aac",
  "flacenc",
@@ -4193,7 +4193,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-mcp"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "phonon-core",
  "phonon-io",
@@ -4209,7 +4209,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-podcast"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "futures",
  "phonon-ai",
@@ -4227,7 +4227,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-server"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -4252,7 +4252,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-studio"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "blake3",
  "dioxus",
@@ -4274,7 +4274,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-tests"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "id3",
  "phonon-ai",
@@ -4290,7 +4290,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-video"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "phonon-core",
  "phonon-io",
@@ -4304,7 +4304,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-wasm"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "phonon-core",
  "serde",
@@ -4315,7 +4315,7 @@ dependencies = [
 
 [[package]]
 name = "phonon-wav"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "hound",
  "phonon-core",
