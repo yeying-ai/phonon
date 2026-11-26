@@ -32,9 +32,14 @@ pub use ogg::{OggConfig, write_ogg};
 pub use ogg_tags::write_ogg_tagged;
 pub use tags::{AudioChapter, CoverArt, CoverMime, PodcastTags};
 
+/// Default cap on decoded PCM samples (256M f32 samples = 1 GiB) to guard
+/// against decompression bombs from tiny highly-compressed audio files.
+pub const DEFAULT_MAX_DECODE_SAMPLES: usize = 256 * 1024 * 1024;
+
 /// Reads an audio file and decodes it into an AudioBuffer.
 ///
 /// Supports all formats supported by Symphonia (MP3, WAV, FLAC, OGG, AAC, etc.).
+/// Decoded sample count is bounded by [`DEFAULT_MAX_DECODE_SAMPLES`].
 ///
 /// # Example
 ///
@@ -44,25 +49,34 @@ pub use tags::{AudioChapter, CoverArt, CoverMime, PodcastTags};
 /// ```
 #[instrument(skip(path), fields(path = %path.as_ref().display()))]
 pub fn read_audio<P: AsRef<Path>>(path: P) -> Result<AudioBuffer> {
+  read_audio_limited(path, DEFAULT_MAX_DECODE_SAMPLES)
+}
+
+/// Like [`read_audio`], but aborts decoding if the output would exceed
+/// `max_samples` interleaved `f32` samples.
+#[instrument(skip(path), fields(path = %path.as_ref().display(), max_samples))]
+pub fn read_audio_limited<P: AsRef<Path>>(path: P, max_samples: usize) -> Result<AudioBuffer> {
   let path = path.as_ref();
   let src = File::open(path).map_err(PhononError::Io)?;
 
   // Create a probe hint using the file's extension. [Optional]
   let mut hint = Hint::new();
-  if let Some(extension) = path.extension() {
-    if let Some(extension_str) = extension.to_str() {
-      hint.with_extension(extension_str);
-    }
+  if let Some(extension) = path.extension()
+    && let Some(extension_str) = extension.to_str()
+  {
+    hint.with_extension(&extension_str.to_ascii_lowercase());
   }
 
   decode(
     MediaSourceStream::new(Box::new(src), Default::default()),
     &hint,
+    max_samples,
   )
 }
 
 /// Decodes an encoded audio file held in memory, such as an HTTP response
 /// body. `extension` (`"mp3"`, `"wav"`, ...) is a hint for the format probe.
+/// Decoded sample count is bounded by [`DEFAULT_MAX_DECODE_SAMPLES`].
 ///
 /// # Example
 ///
@@ -72,16 +86,30 @@ pub fn read_audio<P: AsRef<Path>>(path: P) -> Result<AudioBuffer> {
 /// ```
 #[instrument(skip(bytes), fields(len = bytes.len()))]
 pub fn decode_audio(bytes: &[u8], extension: &str) -> Result<AudioBuffer> {
+  decode_audio_limited(bytes, extension, DEFAULT_MAX_DECODE_SAMPLES)
+}
+
+/// Like [`decode_audio`], but aborts decoding if the output would exceed
+/// `max_samples` interleaved `f32` samples.
+#[instrument(skip(bytes), fields(len = bytes.len(), max_samples))]
+pub fn decode_audio_limited(
+  bytes: &[u8],
+  extension: &str,
+  max_samples: usize,
+) -> Result<AudioBuffer> {
   let mut hint = Hint::new();
-  hint.with_extension(extension);
+  if !extension.is_empty() {
+    hint.with_extension(&extension.to_ascii_lowercase());
+  }
   let src = Cursor::new(bytes.to_vec());
   decode(
     MediaSourceStream::new(Box::new(src), Default::default()),
     &hint,
+    max_samples,
   )
 }
 
-fn decode(mss: MediaSourceStream, hint: &Hint) -> Result<AudioBuffer> {
+fn decode(mss: MediaSourceStream, hint: &Hint, max_samples: usize) -> Result<AudioBuffer> {
   // Use the default options for metadata and format readers.
   let meta_opts: MetadataOptions = Default::default();
   let fmt_opts: FormatOptions = Default::default();
@@ -118,6 +146,7 @@ fn decode(mss: MediaSourceStream, hint: &Hint) -> Result<AudioBuffer> {
   let mut samples: Vec<f32> = Vec::new();
   let mut sample_rate = 0;
   let mut channels = 0;
+  let mut sample_buf: Option<SampleBuffer<f32>> = None;
 
   let mut skipped = 0usize;
 
@@ -154,12 +183,23 @@ fn decode(mss: MediaSourceStream, hint: &Hint) -> Result<AudioBuffer> {
           channels = spec.channels.count() as u16;
         }
 
-        // Copy the decoded audio samples into a SampleBuffer for easy conversion.
-        let mut sample_buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-        sample_buf.copy_interleaved_ref(decoded);
+        // Copy the decoded audio samples into a reusable SampleBuffer.
+        let need_cap = decoded.capacity() * spec.channels.count();
+        let buf = match &mut sample_buf {
+          Some(existing) if existing.capacity() >= need_cap => existing,
+          slot => slot.insert(SampleBuffer::<f32>::new(decoded.capacity() as u64, spec)),
+        };
+        buf.copy_interleaved_ref(decoded);
+
+        let chunk = buf.samples();
+        if samples.len().saturating_add(chunk.len()) > max_samples {
+          return Err(PhononError::InvalidParam(format!(
+            "Decoded audio exceeds sample limit ({max_samples} samples)"
+          )));
+        }
 
         // The samples are now floating point numbers.
-        samples.extend_from_slice(sample_buf.samples());
+        samples.extend_from_slice(chunk);
       }
       // A malformed packet (bad CRC / bitstream, or reading past the end
       // of the in-memory packet) costs that packet only, as symphonia
@@ -358,6 +398,19 @@ mod tests {
     assert!(loaded.samples.is_empty());
     assert_eq!(loaded.sample_rate, 48_000);
     assert_eq!(loaded.channels, 2);
+    Ok(())
+  }
+
+  #[test]
+  fn test_decode_audio_limited_rejects_oversized() -> Result<()> {
+    let buffer = AudioBuffer {
+      samples: vec![0.1; 1_000],
+      sample_rate: 16_000,
+      channels: 1,
+    };
+    let bytes = phonon_wav::encode_wav(&buffer)?;
+    assert!(decode_audio_limited(&bytes, "wav", 1_000).is_ok());
+    assert!(decode_audio_limited(&bytes, "wav", 500).is_err());
     Ok(())
   }
 }

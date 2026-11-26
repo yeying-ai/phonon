@@ -14,8 +14,9 @@
 use axum::{
   Router,
   body::Bytes,
-  extract::{DefaultBodyLimit, Json, State},
+  extract::{DefaultBodyLimit, Json, Request, State},
   http::{HeaderMap, StatusCode, header},
+  middleware::{self, Next},
   response::{IntoResponse, Response},
   routing::{get, post},
 };
@@ -25,6 +26,9 @@ use phonon_core::AudioBuffer;
 use phonon_io::{Mp3Config, PodcastTags};
 use phonon_podcast::{AssetSource, PodcastPipeline, PodcastScript};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Semaphore;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
@@ -61,6 +65,13 @@ const MAX_SEGMENTS: usize = 200;
 /// Upper bound for every seconds-valued pipeline parameter (pauses, fades).
 const MAX_DURATION_PARAM_SECS: f64 = 30.0;
 const MAX_TTS_CONCURRENCY: usize = 8;
+/// Cap decoded PCM samples on `/api/lufs` (64M samples = 256 MiB PCM) to block
+/// decompression bombs hidden inside a <=32 MiB compressed upload.
+const MAX_LUFS_DECODE_SAMPLES: usize = 64 * 1024 * 1024;
+/// Maximum concurrent in-flight HTTP requests before returning 503.
+const MAX_CONCURRENT_REQUESTS: usize = 16;
+/// Hard per-request timeout before returning 504.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const VALID_MP3_BITRATES: [u32; 10] = [64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
 
 fn bad_request(msg: impl std::fmt::Display) -> Response {
@@ -96,11 +107,26 @@ fn check_untrusted_script(script: &PodcastScript) -> Result<(), String> {
     ("intro", cfg.effective_intro()),
     ("outro", cfg.effective_outro()),
   ] {
-    if let Some(AssetSource::File { .. }) = asset {
-      return Err(format!(
-        "{name}: file-path assets are not accepted over HTTP"
-      ));
+    match asset {
+      Some(AssetSource::File { .. }) => {
+        return Err(format!(
+          "{name}: file-path assets are not accepted over HTTP"
+        ));
+      }
+      Some(AssetSource::Generated { .. }) => {
+        // Reject before running TTS synthesis: the server has no sound-gen backend.
+        return Err(format!(
+          "{name}: generated audio assets are not enabled on this server"
+        ));
+      }
+      None => {}
     }
+  }
+  if !(0.0..=1.0).contains(&cfg.bgm_volume) {
+    return Err("bgm_volume must be within 0.0..=1.0".to_string());
+  }
+  if !(0.0..=1.0).contains(&cfg.normalize_target) {
+    return Err("normalize_target must be within 0.0..=1.0".to_string());
   }
   if !(8_000..=192_000).contains(&cfg.output_sample_rate) {
     return Err("output_sample_rate must be within 8000..=192000".to_string());
@@ -293,7 +319,14 @@ struct LufsResponse {
 
 /// Map a HTTP `Content-Type` to a file extension that symphonia can probe.
 fn content_type_to_ext(ct: Option<&str>) -> &'static str {
-  match ct.unwrap_or("").to_ascii_lowercase().as_str() {
+  let mime = ct
+    .unwrap_or("")
+    .split(';')
+    .next()
+    .unwrap_or("")
+    .trim()
+    .to_ascii_lowercase();
+  match mime.as_str() {
     "audio/mpeg" | "audio/mp3" => "mp3",
     "audio/flac" | "audio/x-flac" => "flac",
     "audio/ogg" | "application/ogg" => "ogg",
@@ -307,8 +340,8 @@ fn finite(v: f32) -> Option<f32> {
   if v.is_finite() { Some(v) } else { None }
 }
 
-/// Write `bytes` to a temp file with the given extension and decode via
-/// `phonon_io::read_audio`. Returns the decoded buffer.
+/// Decode uploaded audio bytes in memory (capped at `MAX_LUFS_DECODE_SAMPLES`)
+/// and return full BS.1770 loudness metrics.
 async fn lufs_handler(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
   let ct = headers
     .get(header::CONTENT_TYPE)
@@ -317,7 +350,13 @@ async fn lufs_handler(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
 
   // Branch 1: JSON body with base64 + format hint.
   let parsed_json = ct
-    .map(|s| s.starts_with("application/json"))
+    .map(|s| {
+      s.split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .eq_ignore_ascii_case("application/json")
+    })
     .unwrap_or(false);
   let (audio, ext) = if parsed_json {
     match serde_json::from_slice::<LufsJsonRequest>(&body) {
@@ -342,7 +381,7 @@ async fn lufs_handler(headers: HeaderMap, body: Bytes) -> impl IntoResponse {
   // The outer error is a failed worker task, the inner one a decode error.
   let measured = blocking(move || {
     Ok(
-      phonon_io::decode_audio(&audio, &ext)
+      phonon_io::decode_audio_limited(&audio, &ext, MAX_LUFS_DECODE_SAMPLES)
         .map_err(|e| e.to_string())
         .map(|buf| {
           let report = phonon_core::measure_loudness(&buf);
@@ -525,8 +564,31 @@ async fn podcast_episode_handler(
 // Server setup
 // ---------------------------------------------------------------------------
 
+async fn enforce_concurrency_and_timeout(
+  State(limit): State<Arc<Semaphore>>,
+  req: Request,
+  next: Next,
+) -> Response {
+  let Ok(_permit) = limit.try_acquire_owned() else {
+    return (
+      StatusCode::SERVICE_UNAVAILABLE,
+      Json(serde_json::json!({"error": "server busy: too many concurrent requests"})),
+    )
+      .into_response();
+  };
+  match tokio::time::timeout(REQUEST_TIMEOUT, next.run(req)).await {
+    Ok(resp) => resp,
+    Err(_) => (
+      StatusCode::GATEWAY_TIMEOUT,
+      Json(serde_json::json!({"error": "request timed out"})),
+    )
+      .into_response(),
+  }
+}
+
 /// Routes, with every TTS request served by `tts`.
 fn app(tts: AnyTts) -> Router {
+  let concurrency = Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS));
   Router::new()
     .route("/health", get(health))
     .route("/api/tts", post(tts_handler))
@@ -535,6 +597,10 @@ fn app(tts: AnyTts) -> Router {
     .route("/api/lufs", post(lufs_handler))
     .route("/api/podcast/episode", post(podcast_episode_handler))
     .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
+    .layer(middleware::from_fn_with_state(
+      concurrency,
+      enforce_concurrency_and_timeout,
+    ))
     .layer(TraceLayer::new_for_http())
     .with_state(tts)
 }
@@ -817,5 +883,31 @@ mod tests {
       .await
       .unwrap();
     assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+  }
+
+  #[tokio::test]
+  async fn test_generate_rejects_generated_assets_and_out_of_range_gains() {
+    let generated = script_with_config(serde_json::json!({
+      "bgm": {"kind": "generated", "prompt": {"prompt": "calm piano"}}
+    }));
+    assert_eq!(
+      post_json("/api/podcast/generate", generated).await,
+      StatusCode::BAD_REQUEST
+    );
+
+    let bad_bgm = script_with_config(serde_json::json!({"bgm_volume": 5.0}));
+    assert_eq!(
+      post_json("/api/podcast/generate", bad_bgm).await,
+      StatusCode::BAD_REQUEST
+    );
+  }
+
+  #[test]
+  fn test_content_type_to_ext_strips_mime_parameters() {
+    assert_eq!(content_type_to_ext(Some("audio/ogg; codecs=vorbis")), "ogg");
+    assert_eq!(
+      content_type_to_ext(Some("AUDIO/MPEG; charset=binary")),
+      "mp3"
+    );
   }
 }

@@ -302,7 +302,8 @@ fn register_audio_load(r: &mut ToolRegistry) {
       let LoadArgs { path } =
         serde_json::from_value(args).map_err(|e| McpError::InvalidArgs(e.to_string()))?;
       let path = resolve_for_read(&fs_root, &path)?;
-      let buf = phonon_io::read_audio(&path).map_err(McpError::from)?;
+      let max_samples = registry.remaining_bytes() / std::mem::size_of::<f32>();
+      let buf = phonon_io::read_audio_limited(&path, max_samples).map_err(McpError::from)?;
       store(&registry, buf)
     })
   });
@@ -670,6 +671,11 @@ fn register_audio_resample(r: &mut ToolRegistry) {
         handle,
         target_rate,
       } = serde_json::from_value(args).map_err(|e| McpError::InvalidArgs(e.to_string()))?;
+      if !(8_000..=192_000).contains(&target_rate) {
+        return Err(McpError::InvalidArgs(
+          "target_rate must be within 8000..=192000".to_string(),
+        ));
+      }
       let buf = registry.get(&handle)?;
       let resampled = phonon_core::resample(&buf, target_rate).map_err(McpError::from)?;
       store(&registry, resampled)
@@ -952,5 +958,26 @@ mod tests {
     ] {
       assert!(names.contains(&expected), "missing tool: {}", expected);
     }
+  }
+
+  #[tokio::test]
+  async fn test_audio_resample_rejects_out_of_range_rate() {
+    let r = ToolRegistry::new(std::env::temp_dir());
+    let h = r
+      .registry
+      .insert(AudioBuffer {
+        samples: vec![0.1; 16],
+        sample_rate: 16_000,
+        channels: 1,
+      })
+      .unwrap();
+    let err = r
+      .call(
+        "audio_resample",
+        json!({ "handle": h, "target_rate": 1_000_000_000u32 }),
+      )
+      .await
+      .unwrap_err();
+    assert!(matches!(err, McpError::InvalidArgs(_)));
   }
 }

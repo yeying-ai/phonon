@@ -44,6 +44,82 @@ pub struct Server {
   pub tools: ToolRegistry,
 }
 
+/// Maximum size of a single JSON-RPC line (4 MiB) to prevent unbounded memory
+/// allocation from malformed or hostile clients.
+const MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
+
+enum LineRead {
+  Eof,
+  Line(String),
+  TooLong,
+}
+
+async fn read_bounded_line<R>(
+  reader: &mut BufReader<R>,
+  max_bytes: usize,
+) -> std::io::Result<LineRead>
+where
+  R: tokio::io::AsyncRead + Unpin,
+{
+  let mut buf = Vec::new();
+  let mut overflowed = false;
+  loop {
+    let available = reader.fill_buf().await?;
+    if available.is_empty() {
+      if overflowed {
+        return Ok(LineRead::TooLong);
+      }
+      if buf.is_empty() {
+        return Ok(LineRead::Eof);
+      }
+      break;
+    }
+
+    let (consume_len, found_newline) = match available.iter().position(|&b| b == b'\n') {
+      Some(idx) => (idx + 1, true),
+      None => (available.len(), false),
+    };
+
+    if !overflowed {
+      if buf.len().saturating_add(consume_len) > max_bytes {
+        overflowed = true;
+        buf.clear();
+      } else {
+        buf.extend_from_slice(&available[..consume_len]);
+      }
+    }
+    reader.consume(consume_len);
+
+    if found_newline {
+      if overflowed {
+        return Ok(LineRead::TooLong);
+      }
+      break;
+    }
+  }
+
+  if buf.ends_with(b"\n") {
+    buf.pop();
+    if buf.ends_with(b"\r") {
+      buf.pop();
+    }
+  }
+  String::from_utf8(buf)
+    .map(LineRead::Line)
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+fn truncate_for_log(s: &str, max_bytes: usize) -> &str {
+  if s.len() <= max_bytes {
+    return s;
+  }
+  let mut end = max_bytes;
+  while end > 0 && !s.is_char_boundary(end) {
+    end -= 1;
+  }
+  &s[..end]
+}
+
 impl Server {
   /// Server with the built-in tools; file access is confined to `fs_root`.
   pub fn new(fs_root: impl Into<std::path::PathBuf>) -> Self {
@@ -67,13 +143,29 @@ impl Server {
     R: tokio::io::AsyncRead + Unpin + Send,
     W: tokio::io::AsyncWrite + Unpin + Send,
   {
-    let mut lines = BufReader::new(reader).lines();
+    let mut reader = BufReader::new(reader);
     info!("phonon-mcp server starting");
-    while let Some(line) = lines.next_line().await? {
-      if line.trim().is_empty() {
-        continue;
-      }
-      let response = self.handle_line(&line).await;
+    loop {
+      let response = match read_bounded_line(&mut reader, MAX_LINE_BYTES).await? {
+        LineRead::Eof => break,
+        LineRead::TooLong => {
+          warn!(max_bytes = MAX_LINE_BYTES, "JSON-RPC line exceeded limit");
+          Some(json!({
+            "jsonrpc": "2.0",
+            "id": Value::Null,
+            "error": {
+              "code": -32600,
+              "message": format!("Request line exceeds {MAX_LINE_BYTES} byte limit")
+            }
+          }))
+        }
+        LineRead::Line(line) => {
+          if line.trim().is_empty() {
+            continue;
+          }
+          self.handle_line(&line).await
+        }
+      };
       if let Some(out) = response {
         let mut s = serde_json::to_string(&out).unwrap_or_else(|_| "{}".into());
         s.push('\n');
@@ -97,7 +189,7 @@ impl Server {
     let req: Value = match serde_json::from_str(line) {
       Ok(v) => v,
       Err(e) => {
-        warn!(err = %e, line = line, "JSON parse error");
+        warn!(err = %e, preview = truncate_for_log(line, 256), "JSON parse error");
         // Per spec, we can't reply without an id, but emit a parse-error
         // response with id=null to surface the problem.
         return Some(json!({
@@ -276,5 +368,19 @@ mod tests {
     let resp = s.handle_line(&req.to_string()).await.unwrap();
     assert_eq!(resp["id"], 6);
     assert_eq!(resp["result"], json!({}));
+  }
+
+  #[tokio::test]
+  async fn test_read_bounded_line_rejects_oversized_and_recovers() {
+    let data = format!("{}\n{{\"ok\":true}}\n", "x".repeat(64));
+    let mut reader = BufReader::new(data.as_bytes());
+    assert!(matches!(
+      read_bounded_line(&mut reader, 32).await.unwrap(),
+      LineRead::TooLong
+    ));
+    match read_bounded_line(&mut reader, 32).await.unwrap() {
+      LineRead::Line(line) => assert_eq!(line, "{\"ok\":true}"),
+      _ => panic!("expected following line after oversized line"),
+    }
   }
 }

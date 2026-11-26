@@ -40,6 +40,9 @@ impl std::fmt::Display for AudioHandle {
 
 /// Default cap on PCM held by one registry: 1 GiB of `f32` samples.
 pub const DEFAULT_MAX_BYTES: usize = 1 << 30;
+/// Default cap on distinct handles in one registry (bounds map overhead even
+/// for zero-sample buffers).
+pub const DEFAULT_MAX_HANDLES: usize = 1024;
 
 #[derive(Debug, Default)]
 struct Store {
@@ -85,12 +88,25 @@ impl AssetRegistry {
     }
   }
 
+  /// Remaining PCM capacity in bytes before hitting the cap.
+  pub fn remaining_bytes(&self) -> usize {
+    let g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+    self.max_bytes.saturating_sub(g.bytes)
+  }
+
   /// Insert a buffer and return its handle, or [`McpError::RegistryFull`]
   /// if it would exceed the cap.
-  pub fn insert(&self, buffer: AudioBuffer) -> Result<AudioHandle, McpError> {
+  pub fn insert(&self, mut buffer: AudioBuffer) -> Result<AudioHandle, McpError> {
+    buffer.samples.shrink_to_fit();
     let size = pcm_bytes(&buffer);
     let mut g = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
-    if g.bytes + size > self.max_bytes {
+    if g.buffers.len() >= DEFAULT_MAX_HANDLES {
+      return Err(McpError::RegistryFull(format!(
+        "handle limit ({DEFAULT_MAX_HANDLES}) reached; free handles with audio_drop"
+      )));
+    }
+    let next_bytes = g.bytes.checked_add(size);
+    if next_bytes.is_none_or(|total| total > self.max_bytes) {
       return Err(McpError::RegistryFull(format!(
         "{} MB in use of {} MB, this buffer needs {} MB; free memory with audio_drop",
         g.bytes >> 20,
@@ -100,7 +116,7 @@ impl AssetRegistry {
     }
     let handle = AudioHandle::new();
     g.buffers.insert(handle.clone(), Arc::new(buffer));
-    g.bytes += size;
+    g.bytes = g.bytes.saturating_add(size);
     Ok(handle)
   }
 
