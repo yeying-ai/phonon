@@ -315,5 +315,6 @@
   - DONE (`b5c8d48`): 完成 `AudioLabView`（`ResizablePanelGroup` + `Empty`）、`WaveformView`、`InfoPanel` 及 4 个 DSP/导出面板迁移，全部通过 Tailwind v4（58ms）、fmt、clippy 与 16 单测
 - [x] **U4** 拆分并迁移 `PodcastStudioView`（将 1917 行拆为 `components/studio/` 子模块），接入 `ResizablePanelGroup` 三栏、`Dialog`/`Sheet`（AI Draft & MCP Sync）、`Tabs`（Underline Inspector）、`Card` / `Input` / `Textarea` / `Button` (`loading`) / `Badge` / `Sonner`
   - DONE (`d1d37c4`): 拆分为 `components/podcast_studio/{mod,left_rail,script_desk,episode_inspector,actions}.rs`，接入三栏 `ResizablePanelGroup`、AI Draft & MCP `Dialog`、`Tabs`（Underline）与全局 `Sonner` 通知队列，收敛至 17 个已用 features，fmt/clippy/16 单测全绿
-- [ ] **U5** Desktop WebView 全链路交互验收与 `FB-studio-*` 上游实测缺陷清单沉淀（区分 `dioxus-ui` 真实缺陷与业务适配）
+- [x] **U5** Desktop WebView 全链路交互验收与 `FB-studio-*` 上游实测缺陷清单沉淀（区分 `dioxus-ui` 真实缺陷与业务适配）
+  - DONE: 沉淀 `FB-studio-01` 至 `FB-studio-07`（见 `dioxus_shadcn_feedback_v0.7.0.md`），并在 `dioxus-ui` 分支 `feat/desktop-workstation-ergonomics` 按 RFC 0083 / `M226.1`–`M226.5`（`3b72f2ea`..`db3c68ad`）完成全部 5 项修复与门禁校验并推送至远端，待 PR 合并及 crates.io 发布 `0.8.0` 后进入 U6
 - [ ] **U6** 消费上游 `dioxus-shadcn` 修复版本（升级 crates.io 版本、重跑 `dxui init` 验证 `@source` 自动更新、清理临时绕过、更新文档与全工作区门禁）
