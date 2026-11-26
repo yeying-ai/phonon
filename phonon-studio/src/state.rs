@@ -12,6 +12,7 @@ use phonon_podcast::Episode;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 /// Alias preserving compatibility with existing Audio Lab components.
 pub type ActivePluginState = ActivePluginSpec;
@@ -110,9 +111,13 @@ pub struct AppState {
   pub provider_statuses: Signal<Vec<ProviderStatus>>,
   pub segment_audio: Signal<HashMap<usize, SegmentAudioEntry>>,
   pub synthesizing_segments: Signal<HashSet<usize>>,
+  pub aligning_segments: Signal<HashSet<usize>>,
   pub is_assembling: Signal<bool>,
   pub is_drafting: Signal<bool>,
   pub show_ai_draft: Signal<bool>,
+  pub show_mcp_panel: Signal<bool>,
+  pub mcp_live_sync: Signal<bool>,
+  pub last_synced_mtime: Signal<Option<SystemTime>>,
   pub rendered_episode: Signal<Option<Arc<Episode>>>,
   pub episode_view: Signal<Option<EpisodeRenderView>>,
   pub inspector_tab: Signal<InspectorTab>,
@@ -152,9 +157,13 @@ impl AppState {
       provider_statuses: Signal::new(inspect_providers()),
       segment_audio: Signal::new(HashMap::new()),
       synthesizing_segments: Signal::new(HashSet::new()),
+      aligning_segments: Signal::new(HashSet::new()),
       is_assembling: Signal::new(false),
       is_drafting: Signal::new(false),
       show_ai_draft: Signal::new(false),
+      show_mcp_panel: Signal::new(false),
+      mcp_live_sync: Signal::new(true),
+      last_synced_mtime: Signal::new(None),
       rendered_episode: Signal::new(None),
       episode_view: Signal::new(None),
       inspector_tab: Signal::new(InspectorTab::Master),

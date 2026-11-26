@@ -4,18 +4,28 @@
 //! `phonon-engine`, and `phonon-io` without depending on Dioxus signals so
 //! every workflow can be unit-tested independently.
 
-use crate::project::{ChapterView, EpisodeRenderView, SegmentAudioEntry, StudioProject};
-use phonon_ai::{CachingTts, Config, TtsProvider, builtin_presets};
-use phonon_core::{AudioBuffer, DspPlugin, PluginRegistry, algorithms};
+use crate::project::{
+  ChapterView, EpisodeRenderView, SegmentAudioEntry, SegmentMediaOverride, StudioProject,
+  TranscriptCutSpan, spans_from_speech_regions, spans_from_transcript,
+};
+use phonon_ai::{CachingTts, Config, SttProvider, TranscribeOptions, TtsProvider, builtin_presets};
+use phonon_core::{
+  AudioBuffer, DspPlugin, PluginRegistry, VoiceEnhanceConfig, algorithms, detect_speech_regions,
+  enhance_voice, splice_ranges,
+};
 use phonon_io::{FlacConfig, Mp3Config, OggConfig};
 use phonon_podcast::{
   Episode, OpenAiScriptGenerator, PodcastScript, ScriptGenerator, ScriptRequest,
   render_episode_from_buffers,
 };
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::SystemTime;
 use tokio::sync::Semaphore;
+
+static STUDIO_TMP_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// Runtime summary of a built-in AI provider preset and whether its API key is
 /// present in the process environment. Secret values are never stored or exposed.
@@ -101,12 +111,140 @@ pub fn build_ai_config(
   Ok(cfg)
 }
 
+/// Load, splice (non-destructive text-cut spans), and optionally broadcast-enhance
+/// a recorded human voice segment completely locally.
+pub fn render_recorded_segment(ov: &SegmentMediaOverride) -> Result<AudioBuffer, String> {
+  let Some(path) = ov.recorded_path.as_deref().filter(|s| !s.trim().is_empty()) else {
+    return Err("Segment has no recorded audio path".to_string());
+  };
+  let mut buf = phonon_io::read_audio(path)
+    .map_err(|e| format!("Failed to read recorded audio '{path}': {e}"))?;
+  let dur = buf.duration_secs();
+  let kept = ov.kept_ranges(dur);
+  if kept.is_empty() {
+    return Err("All transcript spans in this recorded segment are deleted".to_string());
+  }
+  let covers_full =
+    kept.len() == 1 && kept[0].0 <= 0.005 && (dur - kept[0].1).abs() <= 0.005;
+  if !covers_full {
+    buf = splice_ranges(&buf, &kept, 0.015)
+      .map_err(|e| format!("Failed to splice recorded segment: {e}"))?;
+  }
+  if ov.enhance_voice {
+    // Keep LUFS leveling to the episode pipeline so BGM & multi-speaker leveling stay consistent.
+    let mut cfg = VoiceEnhanceConfig::podcast_studio();
+    cfg.target_lufs = None;
+    buf = enhance_voice(&buf, &cfg)
+      .map_err(|e| format!("Local voice enhancement failed: {e}"))?;
+  }
+  Ok(buf)
+}
+
+/// Align a recorded audio file into clickable cut spans.
+///
+/// Uses the configured `phonon-ai` STT provider when an API key is available;
+/// automatically falls back to offline energy-based speech region detection
+/// (`detect_speech_regions`) so text-cut & silence-stripping still work without
+/// any network or API key.
+///
+/// Returns `(spans, synced_text, used_stt)`.
+pub async fn align_recorded_segment(
+  recorded_path: String,
+  language_hint: Option<String>,
+) -> Result<(Vec<TranscriptCutSpan>, String, bool), String> {
+  // Attempt cloud/local STT first if configured.
+  if let Ok(cfg) = Config::load(None)
+    && let Ok(stt) = cfg.stt()
+  {
+    let mut opts = TranscribeOptions::new();
+    if let Some(lang) = language_hint
+      .as_deref()
+      .map(str::trim)
+      .filter(|s| !s.is_empty())
+    {
+      // ISO-639-1 hint ("zh-CN" -> "zh").
+      let short = lang.split('-').next().unwrap_or(lang);
+      opts = opts.with_language(short);
+    }
+    if let Ok(result) = stt.transcribe_file(&recorded_path, Some(opts)).await {
+      let spans = spans_from_transcript(&result);
+      if !spans.is_empty() {
+        return Ok((spans, result.text, true));
+      }
+    }
+  }
+
+  // Offline fallback: 20 ms energy VAD speech region detection.
+  let path_clone = recorded_path.clone();
+  let regions = tokio::task::spawn_blocking(move || {
+    let buf = phonon_io::read_audio(&path_clone)
+      .map_err(|e| format!("Failed to read recording '{path_clone}': {e}"))?;
+    let mut regs = detect_speech_regions(&buf, -38.0, 0.35, 0.06)
+      .map_err(|e| format!("Speech detection failed: {e}"))?;
+    if regs.is_empty() && buf.duration_secs() > 0.0 {
+      regs.push((0.0, buf.duration_secs()));
+    }
+    Ok::<_, String>(regs)
+  })
+  .await
+  .map_err(|e| format!("Alignment task failed: {e}"))??;
+
+  let spans = spans_from_speech_regions(&regions);
+  let text = format!(
+    "[Recorded voice: {} active clip(s) detected offline]",
+    spans.len()
+  );
+  Ok((spans, text, false))
+}
+
+/// Atomically save a Studio project JSON file (temp file + rename) and return
+/// its resulting modification timestamp so the MCP live-sync watcher ignores
+/// our own writes.
+pub fn write_project_atomic_file(path: &Path, json: &str) -> Result<SystemTime, String> {
+  let parent = path
+    .parent()
+    .filter(|p| !p.as_os_str().is_empty())
+    .unwrap_or_else(|| Path::new("."));
+  let seq = STUDIO_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+  let pid = std::process::id();
+  let tmp = parent.join(format!(".phonon-studio.{pid}.{seq}.tmp.json"));
+  if let Err(e) = std::fs::write(&tmp, json) {
+    let _ = std::fs::remove_file(&tmp);
+    return Err(format!("Failed to write temporary project file: {e}"));
+  }
+  if let Err(e) = std::fs::rename(&tmp, path) {
+    let _ = std::fs::remove_file(&tmp);
+    return Err(format!("Failed to replace project file atomically: {e}"));
+  }
+  std::fs::metadata(path)
+    .and_then(|m| m.modified())
+    .map_err(|e| format!("Failed to stat saved project file: {e}"))
+}
+
+/// Check if an external agent (e.g. `phonon-mcp`) atomically updated `path`
+/// since `last_seen`. Returns `Some((new_mtime, parse_result))` only when the
+/// file's modification time advanced.
+pub fn check_external_project_reload(
+  path: &Path,
+  last_seen: Option<SystemTime>,
+) -> Option<(SystemTime, Result<StudioProject, String>)> {
+  let mtime = std::fs::metadata(path).ok()?.modified().ok()?;
+  if let Some(prev) = last_seen
+    && mtime <= prev
+  {
+    return None;
+  }
+  let res = std::fs::read_to_string(path)
+    .map_err(|e| format!("Failed to read synced project: {e}"))
+    .and_then(|raw| StudioProject::from_json(&raw));
+  Some((mtime, res))
+}
+
 /// Synthesize a single segment for preview or regeneration.
 ///
-/// When `project.use_cache` is true and `force_refresh` is false, hits the
-/// persistent `CachingTts` filesystem cache. When `force_refresh` is true,
-/// invalidates the disk cache entry (if present) before re-synthesizing so the
-/// fresh take is persisted cleanly.
+/// If the segment has a Phase 2 `recorded_path` override, renders it locally
+/// (non-destructive text-cut splicing + optional broadcast voice enhancement)
+/// without calling cloud TTS. Otherwise uses `CachingTts` when enabled.
 pub async fn synthesize_segment(
   project: &StudioProject,
   seg_idx: usize,
@@ -117,6 +255,28 @@ pub async fn synthesize_segment(
     .segments
     .get(seg_idx)
     .ok_or_else(|| format!("Segment index {seg_idx} out of range"))?;
+  let fingerprint = project
+    .segment_fingerprint(seg_idx)
+    .ok_or_else(|| "Unable to compute segment fingerprint".to_string())?;
+
+  // Local recorded-voice path takes precedence over cloud TTS.
+  if let Some(ov) = project.segment_overrides.get(&seg_idx)
+    && ov
+      .recorded_path
+      .as_deref()
+      .is_some_and(|p| !p.trim().is_empty())
+  {
+    let ov_owned = ov.clone();
+    let buffer = tokio::task::spawn_blocking(move || render_recorded_segment(&ov_owned))
+      .await
+      .map_err(|e| format!("Recorded segment render task failed: {e}"))??;
+    return Ok(SegmentAudioEntry {
+      fingerprint,
+      duration_secs: buffer.duration_secs(),
+      buffer: Arc::new(buffer),
+    });
+  }
+
   if seg.text.trim().is_empty() {
     return Err(format!("Segment {} has empty text", seg_idx + 1));
   }
@@ -131,10 +291,6 @@ pub async fn synthesize_segment(
   {
     voice.language = Some(lang.clone());
   }
-
-  let fingerprint = project
-    .segment_fingerprint(seg_idx)
-    .ok_or_else(|| "Unable to compute segment fingerprint".to_string())?;
 
   let cfg = build_ai_config(
     project.tts_provider.as_deref(),
@@ -190,7 +346,8 @@ pub async fn assemble_episode(
     .map_err(|e| format!("Script validation failed: {e}"))?;
 
   let mut next_cache: HashMap<usize, SegmentAudioEntry> = HashMap::new();
-  let mut pending_indices: Vec<usize> = Vec::new();
+  let mut pending_recorded: Vec<usize> = Vec::new();
+  let mut pending_tts: Vec<usize> = Vec::new();
 
   for idx in 0..project.script.segments.len() {
     let Some(fp) = project.segment_fingerprint(idx) else {
@@ -200,13 +357,44 @@ pub async fn assemble_episode(
       && entry.fingerprint == fp
     {
       next_cache.insert(idx, entry.clone());
+    } else if project
+      .segment_overrides
+      .get(&idx)
+      .and_then(|ov| ov.recorded_path.as_deref())
+      .is_some_and(|p| !p.trim().is_empty())
+    {
+      pending_recorded.push(idx);
     } else {
-      pending_indices.push(idx);
+      pending_tts.push(idx);
     }
   }
 
-  // Only initialize TTS provider if at least one segment needs synthesis.
-  if !pending_indices.is_empty() {
+  // Render recorded human segments locally (spliced + optionally voice-enhanced).
+  for idx in pending_recorded {
+    let ov = project
+      .segment_overrides
+      .get(&idx)
+      .cloned()
+      .ok_or_else(|| format!("Missing override for recorded segment {}", idx + 1))?;
+    let fp = project
+      .segment_fingerprint(idx)
+      .ok_or_else(|| "Fingerprint error".to_string())?;
+    let buf = tokio::task::spawn_blocking(move || render_recorded_segment(&ov))
+      .await
+      .map_err(|e| format!("Recorded segment {} task failed: {e}", idx + 1))??;
+    next_cache.insert(
+      idx,
+      SegmentAudioEntry {
+        fingerprint: fp,
+        duration_secs: buf.duration_secs(),
+        buffer: Arc::new(buf),
+      },
+    );
+  }
+
+  // Only initialize TTS provider if at least one non-recorded segment needs synthesis.
+  if !pending_tts.is_empty() {
+    let pending_indices = pending_tts;
     let cfg = build_ai_config(
       project.tts_provider.as_deref(),
       project.tts_model.as_deref(),
@@ -656,6 +844,81 @@ mod tests {
       std::fs::read_to_string(&srt_path)
         .expect("srt")
         .contains("-->")
+    );
+  }
+
+  #[tokio::test]
+  async fn test_recorded_segment_text_cut_and_enhance_pipeline_offline() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let rec_path = dir.path().join("host_take.wav");
+    let raw = sine_buffer(320.0, 3.0, 16000, 0.3);
+    phonon_wav::write_wav(&rec_path, &raw).expect("write rec wav");
+
+    let mut project = StudioProject::starter();
+    project.script.segments.truncate(1);
+    project.segment_overrides.insert(
+      0,
+      SegmentMediaOverride {
+        recorded_path: Some(rec_path.to_string_lossy().to_string()),
+        enhance_voice: true,
+        spans: vec![
+          crate::project::TranscriptCutSpan {
+            id: 0,
+            start_secs: 0.0,
+            end_secs: 1.0,
+            text: "嗯".to_string(),
+            deleted: true,
+            is_filler: true,
+          },
+          crate::project::TranscriptCutSpan {
+            id: 1,
+            start_secs: 1.0,
+            end_secs: 2.5,
+            text: "大家好欢迎收听".to_string(),
+            deleted: false,
+            is_filler: false,
+          },
+        ],
+        ..SegmentMediaOverride::default()
+      },
+    );
+
+    // Offline assembly with zero TTS provider: slices 1.5s kept range + enhances + masters to -16 LUFS.
+    let (episode, cache, view) = assemble_episode(&project, &HashMap::new())
+      .await
+      .expect("offline recorded assemble");
+    assert_eq!(cache.len(), 1);
+    assert!(
+      (episode.audio.duration_secs() - 1.5).abs() < 0.05,
+      "expected ~1.5s spliced duration, got {:.3}s",
+      episode.audio.duration_secs()
+    );
+    assert!((view.integrated_lufs - (-16.0)).abs() < 1.2);
+  }
+
+  #[test]
+  fn test_atomic_save_and_external_mcp_reload_detection() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("live.phonon.json");
+    let mut project = StudioProject::starter();
+    let json1 = project.to_json_pretty().expect("json1");
+    let mtime1 = write_project_atomic_file(&path, &json1).expect("save1");
+
+    // Unchanged file must not trigger a reload.
+    assert!(check_external_project_reload(&path, Some(mtime1)).is_none());
+
+    // Simulate external MCP edit slightly later (bump file contents & mtime).
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    project.script.title = "Edited by External MCP Agent".to_string();
+    let json2 = project.to_json_pretty().expect("json2");
+    let _ = write_project_atomic_file(&path, &json2).expect("save2");
+
+    let (mtime2, reloaded) =
+      check_external_project_reload(&path, Some(mtime1)).expect("should detect reload");
+    assert!(mtime2 > mtime1);
+    assert_eq!(
+      reloaded.expect("valid project").script.title,
+      "Edited by External MCP Agent"
     );
   }
 }

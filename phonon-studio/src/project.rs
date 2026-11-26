@@ -92,9 +92,25 @@ impl EpisodeTagDraft {
   }
 }
 
-/// Phase 2 extension point for non-destructive per-segment media overrides
-/// (e.g. recorded human speech path, word-level trim bounds, local voice
-/// enhancement flag).
+/// A single clickable word/clause/speech span aligned to a recorded audio file.
+///
+/// Toggling `deleted` non-destructively cuts that audio slice via smooth
+/// micro-crossfades during preview and episode assembly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TranscriptCutSpan {
+  pub id: usize,
+  pub start_secs: f64,
+  pub end_secs: f64,
+  pub text: String,
+  #[serde(default)]
+  pub deleted: bool,
+  #[serde(default)]
+  pub is_filler: bool,
+}
+
+/// Non-destructive per-segment media override supporting recorded human speech,
+/// text-driven audio cutting (`spans`), trim bounds, and local broadcast voice
+/// enhancement.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct SegmentMediaOverride {
   #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -105,6 +121,274 @@ pub struct SegmentMediaOverride {
   pub trim_end_secs: Option<f64>,
   #[serde(default)]
   pub enhance_voice: bool,
+  #[serde(default, skip_serializing_if = "Vec::is_empty")]
+  pub spans: Vec<TranscriptCutSpan>,
+}
+
+impl SegmentMediaOverride {
+  /// Compute the ordered `(start_secs, end_secs)` audio intervals to keep,
+  /// merging adjacent contiguous spans within 25 ms so unedited speech plays
+  /// without unnecessary crossfades.
+  pub fn kept_ranges(&self, total_duration: f64) -> Vec<(f64, f64)> {
+    let min_t = self.trim_start_secs.unwrap_or(0.0).max(0.0);
+    let max_t = self
+      .trim_end_secs
+      .unwrap_or(total_duration)
+      .min(total_duration);
+    if max_t <= min_t {
+      return Vec::new();
+    }
+
+    if self.spans.is_empty() {
+      return vec![(min_t, max_t)];
+    }
+
+    let mut raw: Vec<(f64, f64)> = self
+      .spans
+      .iter()
+      .filter(|s| !s.deleted && s.start_secs.is_finite() && s.end_secs.is_finite())
+      .filter_map(|s| {
+        let a = s.start_secs.max(min_t);
+        let b = s.end_secs.min(max_t);
+        (b > a).then_some((a, b))
+      })
+      .collect();
+    raw.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let mut merged: Vec<(f64, f64)> = Vec::with_capacity(raw.len());
+    for (s, e) in raw {
+      if let Some(last) = merged.last_mut()
+        && s - last.1 <= 0.025
+      {
+        last.1 = last.1.max(e);
+      } else {
+        merged.push((s, e));
+      }
+    }
+    merged
+  }
+
+  /// Active (non-deleted) text assembled from aligned spans, if any spans exist.
+  pub fn active_text(&self) -> Option<String> {
+    if self.spans.is_empty() {
+      return None;
+    }
+    let kept: Vec<&str> = self
+      .spans
+      .iter()
+      .filter(|s| !s.deleted)
+      .map(|s| s.text.as_str())
+      .collect();
+    if kept.is_empty() {
+      return Some(String::new());
+    }
+    // Join with spaces only when adjacent spans are ASCII/Latin words.
+    let mut out = String::new();
+    for part in kept {
+      let needs_space = !out.is_empty()
+        && out.chars().last().is_some_and(|c| c.is_ascii_alphanumeric())
+        && part.chars().next().is_some_and(|c| c.is_ascii_alphanumeric());
+      if needs_space {
+        out.push(' ');
+      }
+      out.push_str(part);
+    }
+    Some(out)
+  }
+
+  /// Mark all filler spans as deleted; returns how many spans changed state.
+  pub fn delete_all_fillers(&mut self) -> usize {
+    let mut changed = 0;
+    for span in &mut self.spans {
+      if span.is_filler && !span.deleted {
+        span.deleted = true;
+        changed += 1;
+      }
+    }
+    changed
+  }
+
+  /// Restore all deleted spans in this segment.
+  pub fn restore_all_spans(&mut self) -> usize {
+    let mut changed = 0;
+    for span in &mut self.spans {
+      if span.deleted {
+        span.deleted = false;
+        changed += 1;
+      }
+    }
+    changed
+  }
+}
+
+/// Returns `true` when `token` (ignoring surrounding punctuation/whitespace)
+/// matches a common spoken Chinese or English filler word.
+pub fn is_filler_token(token: &str) -> bool {
+  let cleaned: String = token
+    .trim()
+    .trim_matches(|c: char| {
+      c.is_ascii_punctuation()
+        || matches!(
+          c,
+          '，' | '。' | '、' | '？' | '！' | '；' | '：' | '…' | '—' | '“' | '”'
+        )
+    })
+    .to_ascii_lowercase();
+  matches!(
+    cleaned.as_str(),
+    "嗯" | "嗯嗯"
+      | "啊"
+      | "呃"
+      | "额"
+      | "那个"
+      | "就是说"
+      | "然后呢"
+      | "um"
+      | "uh"
+      | "erm"
+      | "hmm"
+      | "like"
+      | "you know"
+  )
+}
+
+/// Split a timed STT transcript into clickable word/clause spans with
+/// proportional timestamps and automatic filler tagging.
+pub fn spans_from_transcript(transcript: &phonon_ai::TranscriptResult) -> Vec<TranscriptCutSpan> {
+  let mut out = Vec::new();
+  let mut next_id = 0usize;
+
+  for seg in &transcript.segments {
+    let text = seg.text.trim();
+    if text.is_empty() || !seg.start.is_finite() || !seg.end.is_finite() || seg.end <= seg.start {
+      continue;
+    }
+    let tokens = tokenize_for_cut_spans(text);
+    if tokens.is_empty() {
+      continue;
+    }
+    let weights: Vec<usize> = tokens
+      .iter()
+      .map(|t| t.chars().filter(|c| c.is_alphanumeric()).count().max(1))
+      .collect();
+    let total_w: usize = weights.iter().sum::<usize>().max(1);
+    let dur = seg.end - seg.start;
+    let mut acc = 0usize;
+
+    for (tok, w) in tokens.into_iter().zip(weights) {
+      let s = seg.start + dur * (acc as f64 / total_w as f64);
+      acc += w;
+      let e = seg.start + dur * (acc as f64 / total_w as f64);
+      let filler = is_filler_token(&tok);
+      out.push(TranscriptCutSpan {
+        id: next_id,
+        start_secs: s,
+        end_secs: e,
+        text: tok,
+        deleted: false,
+        is_filler: filler,
+      });
+      next_id += 1;
+    }
+  }
+
+  out
+}
+
+/// Offline fallback when no STT key is configured: convert energy-detected
+/// speech intervals into clickable cut chips.
+pub fn spans_from_speech_regions(regions: &[(f64, f64)]) -> Vec<TranscriptCutSpan> {
+  regions
+    .iter()
+    .enumerate()
+    .map(|(idx, &(start_secs, end_secs))| TranscriptCutSpan {
+      id: idx,
+      start_secs,
+      end_secs,
+      text: format!(
+        "Clip {:02} ({}–{})",
+        idx + 1,
+        format_timecode(start_secs),
+        format_timecode(end_secs)
+      ),
+      deleted: false,
+      is_filler: false,
+    })
+    .collect()
+}
+
+/// Tokenize a transcript line into clickable cut units:
+/// - Whitespace-delimited words for Latin text
+/// - Clause/punctuation chunks + isolated Chinese filler particles (`嗯`, `啊`, `呃`, `额`, `那个`) for CJK text
+fn tokenize_for_cut_spans(text: &str) -> Vec<String> {
+  let has_cjk = text
+    .chars()
+    .any(|c| matches!(c, '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}'));
+  if !has_cjk {
+    return text.split_whitespace().map(ToString::to_string).collect();
+  }
+
+  // First split by clause punctuation while keeping punctuation attached to the preceding token.
+  let mut clauses = Vec::new();
+  let mut current = String::new();
+  for ch in text.chars() {
+    current.push(ch);
+    if matches!(
+      ch,
+      '，' | '。' | '、' | '？' | '！' | '；' | ',' | '.' | '?' | '!' | ';' | ' '
+    ) {
+      let trimmed = current.trim().to_string();
+      if !trimmed.is_empty() {
+        clauses.push(trimmed);
+      }
+      current.clear();
+    }
+  }
+  let tail = current.trim().to_string();
+  if !tail.is_empty() {
+    clauses.push(tail);
+  }
+
+  // Separate leading CJK filler particles so users can cut "嗯"/"呃"/"那个" without losing the whole clause.
+  let mut tokens = Vec::with_capacity(clauses.len());
+  for clause in clauses {
+    let mut rest = clause.as_str();
+    loop {
+      let matched = ["就是说", "然后呢", "那个", "嗯嗯", "嗯", "呃", "额", "啊"]
+        .into_iter()
+        .find(|f| rest.starts_with(f) && rest.len() > f.len());
+      if let Some(filler) = matched {
+        tokens.push(filler.to_string());
+        rest = rest[filler.len()..].trim_start();
+      } else {
+        break;
+      }
+    }
+    if !rest.is_empty() {
+      tokens.push(rest.to_string());
+    }
+  }
+  tokens
+}
+
+/// Build a ready-to-paste MCP client configuration snippet (`claude_desktop_config.json` /
+/// Cursor MCP config) pointing `PHONON_MCP_ROOT` at the current project's directory.
+pub fn mcp_client_config_json(project_path: Option<&Path>) -> String {
+  let root = project_path
+    .and_then(Path::parent)
+    .map(|p| p.display().to_string())
+    .unwrap_or_else(|| "/path/to/your/podcast-folder".to_string());
+  serde_json::json!({
+    "mcpServers": {
+      "phonon": {
+        "command": "phonon-mcp",
+        "env": {
+          "PHONON_MCP_ROOT": root
+        }
+      }
+    }
+  })
+  .to_string()
 }
 
 /// Root project document managed by Phonon Studio.
@@ -291,6 +575,33 @@ impl StudioProject {
     feed_opt(&mut h, eff_lang);
     feed_str(&mut h, &seg.text);
 
+    // Include Phase 2 recorded-audio override, cut spans, and enhance flag so
+    // any text-cut or voice-enhance toggle immediately invalidates segment cache.
+    if let Some(ov) = self.segment_overrides.get(&idx) {
+      h.update(&[1]);
+      feed_opt(&mut h, ov.recorded_path.as_deref());
+      h.update(&[u8::from(ov.enhance_voice)]);
+      for opt_t in [ov.trim_start_secs, ov.trim_end_secs] {
+        match opt_t {
+          Some(t) => {
+            h.update(&[1]);
+            h.update(&t.to_bits().to_le_bytes());
+          }
+          None => {
+            h.update(&[0]);
+          }
+        }
+      }
+      h.update(&(ov.spans.len() as u64).to_le_bytes());
+      for span in &ov.spans {
+        h.update(&span.start_secs.to_bits().to_le_bytes());
+        h.update(&span.end_secs.to_bits().to_le_bytes());
+        h.update(&[u8::from(span.deleted)]);
+      }
+    } else {
+      h.update(&[0]);
+    }
+
     Some(h.finalize().to_hex().to_string())
   }
 
@@ -345,6 +656,7 @@ impl StudioProject {
       _ => self.script.segments.len(),
     };
     self.script.segments.insert(insert_at, new_seg);
+    self.shift_overrides_after_insert(insert_at);
     insert_at
   }
 
@@ -352,8 +664,13 @@ impl StudioProject {
   pub fn duplicate_segment(&mut self, idx: usize) -> Option<usize> {
     let mut cloned = self.script.segments.get(idx)?.clone();
     cloned.chapter = None;
+    let cloned_ov = self.segment_overrides.get(&idx).cloned();
     let insert_at = idx + 1;
     self.script.segments.insert(insert_at, cloned);
+    self.shift_overrides_after_insert(insert_at);
+    if let Some(ov) = cloned_ov {
+      self.segment_overrides.insert(insert_at, ov);
+    }
     Some(insert_at)
   }
 
@@ -363,6 +680,7 @@ impl StudioProject {
       return false;
     }
     self.script.segments.remove(idx);
+    self.shift_overrides_after_remove(idx);
     true
   }
 
@@ -377,7 +695,41 @@ impl StudioProject {
     }
     let target = target as usize;
     self.script.segments.swap(idx, target);
+    let ov_a = self.segment_overrides.remove(&idx);
+    let ov_b = self.segment_overrides.remove(&target);
+    if let Some(a) = ov_a {
+      self.segment_overrides.insert(target, a);
+    }
+    if let Some(b) = ov_b {
+      self.segment_overrides.insert(idx, b);
+    }
     Some(target)
+  }
+
+  fn shift_overrides_after_insert(&mut self, inserted_at: usize) {
+    if self.segment_overrides.is_empty() {
+      return;
+    }
+    let old = std::mem::take(&mut self.segment_overrides);
+    for (k, v) in old {
+      self
+        .segment_overrides
+        .insert(if k >= inserted_at { k + 1 } else { k }, v);
+    }
+  }
+
+  fn shift_overrides_after_remove(&mut self, removed_at: usize) {
+    if self.segment_overrides.is_empty() {
+      return;
+    }
+    let old = std::mem::take(&mut self.segment_overrides);
+    for (k, v) in old {
+      if k < removed_at {
+        self.segment_overrides.insert(k, v);
+      } else if k > removed_at {
+        self.segment_overrides.insert(k - 1, v);
+      }
+    }
   }
 
   /// Add a new speaker to the cast.
@@ -771,5 +1123,94 @@ mod tests {
     assert_eq!(format_timecode(3661.25), "01:01:01.25");
     assert_eq!(format_db(-16.04, "LUFS"), "-16.0 LUFS");
     assert_eq!(format_db(f32::NEG_INFINITY, "LUFS"), "-- LUFS");
+  }
+
+  #[test]
+  fn test_spans_from_transcript_tags_fillers_and_merges_kept_ranges() {
+    let transcript = phonon_ai::TranscriptResult {
+      text: "嗯大家好，那个今天聊音频。".to_string(),
+      language: Some("zh".to_string()),
+      duration: Some(4.0),
+      segments: vec![phonon_ai::TranscriptSegment {
+        id: 0,
+        start: 0.0,
+        end: 4.0,
+        text: "嗯大家好，那个今天聊音频。".to_string(),
+      }],
+    };
+    let spans = spans_from_transcript(&transcript);
+    assert!(spans.len() >= 4, "got {spans:?}");
+    assert!(spans[0].is_filler && spans[0].text == "嗯");
+    assert!(spans.iter().any(|s| s.is_filler && s.text == "那个"));
+
+    let mut ov = SegmentMediaOverride {
+      recorded_path: Some("rec.wav".to_string()),
+      spans,
+      ..SegmentMediaOverride::default()
+    };
+    // Before deleting fillers, contiguous spans merge into one continuous range.
+    let full = ov.kept_ranges(4.0);
+    assert_eq!(full.len(), 1);
+
+    let removed = ov.delete_all_fillers();
+    assert_eq!(removed, 2);
+    let cut = ov.kept_ranges(4.0);
+    assert_eq!(cut.len(), 2, "deleting two fillers leaves two kept clips");
+    let text = ov.active_text().expect("active text");
+    assert!(!text.contains('嗯') && !text.contains("那个"));
+    assert!(text.contains("大家好"));
+    assert!(text.contains("今天聊音频"));
+
+    assert_eq!(ov.restore_all_spans(), 2);
+    assert_eq!(ov.kept_ranges(4.0).len(), 1);
+  }
+
+  #[test]
+  fn test_segment_fingerprint_invalidates_on_override_changes() {
+    let mut project = StudioProject::starter();
+    let fp_tts = project.segment_fingerprint(0).expect("fp_tts");
+
+    project.segment_overrides.insert(
+      0,
+      SegmentMediaOverride {
+        recorded_path: Some("host.wav".to_string()),
+        enhance_voice: false,
+        spans: vec![
+          TranscriptCutSpan {
+            id: 0,
+            start_secs: 0.0,
+            end_secs: 1.0,
+            text: "嗯".to_string(),
+            deleted: false,
+            is_filler: true,
+          },
+          TranscriptCutSpan {
+            id: 1,
+            start_secs: 1.0,
+            end_secs: 2.0,
+            text: "欢迎".to_string(),
+            deleted: false,
+            is_filler: false,
+          },
+        ],
+        ..SegmentMediaOverride::default()
+      },
+    );
+    let fp_rec = project.segment_fingerprint(0).expect("fp_rec");
+    assert_ne!(fp_tts, fp_rec);
+
+    // Toggling enhance_voice invalidates fingerprint.
+    if let Some(ov) = project.segment_overrides.get_mut(&0) {
+      ov.enhance_voice = true;
+    }
+    let fp_enh = project.segment_fingerprint(0).expect("fp_enh");
+    assert_ne!(fp_rec, fp_enh);
+
+    // Deleting a cut span invalidates fingerprint.
+    if let Some(ov) = project.segment_overrides.get_mut(&0) {
+      ov.spans[0].deleted = true;
+    }
+    let fp_cut = project.segment_fingerprint(0).expect("fp_cut");
+    assert_ne!(fp_enh, fp_cut);
   }
 }
