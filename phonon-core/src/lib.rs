@@ -25,7 +25,9 @@ pub use algorithms::reverse::reverse;
 pub use algorithms::silence::silence;
 pub use algorithms::spectrum::compute_spectrum;
 pub use algorithms::speed::change_speed;
+pub use algorithms::splice::{detect_speech_regions, splice_ranges};
 pub use algorithms::trim::trim;
+pub use algorithms::voice_enhance::{VoiceEnhanceConfig, denoise_spectral, enhance_voice};
 pub use algorithms::volume::{adjust_volume, with_volume};
 pub use plugin::{
   CompressorPlugin, DspPlugin, HighPassPlugin, LowPassPlugin, ParametricEqPlugin, PluginParam,

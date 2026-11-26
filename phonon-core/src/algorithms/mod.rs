@@ -21,7 +21,9 @@ pub mod reverse;
 pub mod silence;
 pub mod spectrum;
 pub mod speed;
+pub mod splice;
 pub mod trim;
+pub mod voice_enhance;
 pub mod volume;
 
 pub use channels::ensure_channels;
@@ -48,5 +50,7 @@ pub use reverse::reverse;
 pub use silence::silence;
 pub use spectrum::compute_spectrum;
 pub use speed::change_speed;
+pub use splice::{detect_speech_regions, splice_ranges};
 pub use trim::trim;
+pub use voice_enhance::{VoiceEnhanceConfig, denoise_spectral, enhance_voice};
 pub use volume::{adjust_volume, with_volume};
