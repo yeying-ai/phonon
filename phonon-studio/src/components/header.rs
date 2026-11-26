@@ -1,10 +1,17 @@
 #![allow(non_snake_case)]
 
-use crate::project::StudioProject;
-use crate::state::{AppState, SidePanel, WorkspaceTab, load_audio};
-use crate::studio_ops::write_project_atomic_file;
+use crate::project::{StudioProject, format_timecode};
+use crate::state::{
+  AppState, RecordingTarget, SidePanel, WorkspaceTab, build_display_info, load_audio,
+  start_mic_recording, stop_mic_recording,
+};
+use crate::studio_ops::{
+  recording_output_path, save_recorded_wav_atomic, write_project_atomic_file,
+};
 use dioxus::prelude::*;
+use phonon_engine::PlaybackState;
 use std::collections::HashMap;
+use std::sync::Arc;
 
 #[component]
 pub fn Header() -> Element {
@@ -181,21 +188,64 @@ pub fn Header() -> Element {
           }
         }
       } else {
-        div {
-          class: "flex items-center gap-2",
-          SideToggle { label: "Effects", panel: SidePanel::Effects }
-          SideToggle { label: "EQ", panel: SidePanel::Eq }
-          SideToggle { label: "Plugins", panel: SidePanel::Plugins }
-          SideToggle { label: "Export", panel: SidePanel::Export }
+        {
+          let rec_target = (state.recording_target)();
+          let rec_peak = (state.recording_peak)();
+          let rec_secs = (state.recording_secs)();
+          let vu_pct = (rec_peak.clamp(0.0, 1.0) * 100.0).round() as u32;
+          let rec_tc = format_timecode(rec_secs);
+          rsx! {
+            div {
+              class: "flex items-center gap-2",
+              SideToggle { label: "Effects", panel: SidePanel::Effects }
+              SideToggle { label: "EQ", panel: SidePanel::Eq }
+              SideToggle { label: "Plugins", panel: SidePanel::Plugins }
+              SideToggle { label: "Export", panel: SidePanel::Export }
 
-          div { class: "h-4 w-px bg-[#2D333C] mx-0.5" }
+              div { class: "h-4 w-px bg-[#2D333C] mx-0.5" }
 
-          button {
-            class: "px-3 py-1.5 rounded text-xs font-medium bg-[#E8A238] text-[#141619] hover:opacity-90 transition",
-            onclick: move |_| async move {
-              open_audio_file(&mut state).await;
-            },
-            "Open Audio"
+              if rec_target == Some(RecordingTarget::AudioLab) {
+                div {
+                  class: "flex items-center gap-2 px-2 py-1 rounded bg-[#E05252]/15 border border-[#E05252]/60 text-xs text-[#E05252]",
+                  span { class: "inline-block w-2 h-2 rounded-full bg-[#E05252] animate-pulse" }
+                  span { class: "font-mono tabular-nums", "{rec_tc}" }
+                  div {
+                    class: "w-14 h-1.5 rounded bg-[#141619] overflow-hidden",
+                    div {
+                      class: "h-full bg-[#E05252] transition-all duration-75",
+                      style: "width: {vu_pct}%;",
+                    }
+                  }
+                  button {
+                    class: "px-2 py-0.5 rounded bg-[#E05252] text-[#141619] font-semibold hover:opacity-90",
+                    onclick: move |_| async move {
+                      stop_audiolab_recording(&mut state).await;
+                    },
+                    "■ Stop"
+                  }
+                }
+              } else {
+                button {
+                  class: "px-2.5 py-1.5 rounded text-xs font-medium bg-[#252A31] border border-[#2D333C] text-[#E05252] hover:border-[#E05252] disabled:opacity-40 transition",
+                  disabled: rec_target.is_some(),
+                  title: "Record directly from your default microphone into Audio Lab",
+                  onclick: move |_| {
+                    if let Err(e) = start_mic_recording(&mut state, RecordingTarget::AudioLab) {
+                      state.status_msg.set(e);
+                    }
+                  },
+                  "● Record"
+                }
+              }
+
+              button {
+                class: "px-3 py-1.5 rounded text-xs font-medium bg-[#E8A238] text-[#141619] hover:opacity-90 transition",
+                onclick: move |_| async move {
+                  open_audio_file(&mut state).await;
+                },
+                "Open Audio"
+              }
+            }
           }
         }
       }
@@ -224,6 +274,41 @@ fn SideToggle(label: &'static str, panel: SidePanel) -> Element {
       },
       "{label}"
     }
+  }
+}
+
+async fn stop_audiolab_recording(state: &mut AppState) {
+  let Some((_, buf)) = stop_mic_recording(state) else {
+    return;
+  };
+  let project_path = state.project_path.read().clone();
+  let out_path = recording_output_path(project_path.as_deref(), "audiolab");
+  let save_path = out_path.clone();
+  let path_str = out_path.to_string_lossy().to_string();
+
+  let saved = tokio::task::spawn_blocking(move || {
+    save_recorded_wav_atomic(&save_path, &buf)?;
+    let info = build_display_info(&buf, &path_str);
+    Ok::<_, String>((buf, info))
+  })
+  .await;
+
+  match saved {
+    Ok(Ok((buf, info))) => {
+      let next_token = (state.active_track_token)().wrapping_add(1);
+      state.active_track_token.set(next_token);
+      state.playback_status.set(PlaybackState::Stopped);
+      state.playhead_secs.set(0.0);
+      state.playhead_duration_secs.set(info.duration);
+      state.display_info.set(Some(info));
+      state.audio_buffer.set(Some(Arc::new(buf)));
+      state.status_msg.set(format!(
+        "Recorded & loaded into Audio Lab ({})",
+        out_path.display()
+      ));
+    }
+    Ok(Err(e)) => state.status_msg.set(e),
+    Err(e) => state.status_msg.set(format!("Audio Lab save task error: {e}")),
   }
 }
 

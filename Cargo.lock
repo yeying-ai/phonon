@@ -4224,6 +4224,7 @@ dependencies = [
  "blake3",
  "dioxus",
  "dioxus-logger",
+ "dirs 5.0.1",
  "phonon-ai",
  "phonon-core",
  "phonon-engine",

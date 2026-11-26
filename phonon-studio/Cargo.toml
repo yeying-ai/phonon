@@ -15,6 +15,7 @@ publish = false
 blake3.workspace = true
 dioxus.workspace = true
 dioxus-logger.workspace = true
+dirs.workspace = true
 phonon-ai.workspace = true
 phonon-core.workspace = true
 phonon-engine.workspace = true

@@ -7,7 +7,7 @@ use crate::studio_ops::{
 };
 use dioxus::prelude::*;
 use phonon_core::{AudioBuffer, PluginRegistry, algorithms};
-use phonon_engine::{AudioPlayer, PlaybackState};
+use phonon_engine::{AudioPlayer, AudioRecorder, PlaybackState};
 use phonon_podcast::Episode;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -21,6 +21,13 @@ pub type ActivePluginState = ActivePluginSpec;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorkspaceTab {
   PodcastStudio,
+  AudioLab,
+}
+
+/// Active microphone recording target in Phonon Studio.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordingTarget {
+  Segment(usize),
   AudioLab,
 }
 
@@ -143,6 +150,12 @@ pub struct AppState {
   pub playhead_secs: Signal<f64>,
   pub playhead_duration_secs: Signal<f64>,
   pub playback_status: Signal<PlaybackState>,
+
+  // ── In-App Microphone Recorder ───────────────────────────────────────
+  pub recorder: Signal<Option<AudioRecorder>>,
+  pub recording_target: Signal<Option<RecordingTarget>>,
+  pub recording_peak: Signal<f32>,
+  pub recording_secs: Signal<f64>,
 }
 
 impl AppState {
@@ -187,6 +200,11 @@ impl AppState {
       playhead_secs: Signal::new(0.0),
       playhead_duration_secs: Signal::new(0.0),
       playback_status: Signal::new(PlaybackState::Stopped),
+
+      recorder: Signal::new(None),
+      recording_target: Signal::new(None),
+      recording_peak: Signal::new(0.0),
+      recording_secs: Signal::new(0.0),
     }
   }
 
@@ -464,6 +482,64 @@ where
       state.status_msg.set(done_msg);
     }
     Err(e) => state.status_msg.set(format!("Task error: {e}")),
+  }
+}
+
+/// Starts microphone capture into `target`, stopping any active playback first
+/// to prevent speaker bleed into the microphone.
+pub fn start_mic_recording(state: &mut AppState, target: RecordingTarget) -> Result<(), String> {
+  if state.recorder.read().is_some() {
+    return Err("Recording is already in progress".to_string());
+  }
+  if let Some(player) = state.player_state.read().as_ref() {
+    player.stop();
+  }
+  state.playback_status.set(PlaybackState::Stopped);
+
+  let rec = AudioRecorder::start().map_err(|e| format!("Microphone error: {e}"))?;
+  let sr = rec.sample_rate();
+  let ch = rec.channels();
+  state.recorder.set(Some(rec));
+  state.recording_target.set(Some(target));
+  state.recording_peak.set(0.0);
+  state.recording_secs.set(0.0);
+  let target_label = match target {
+    RecordingTarget::Segment(idx) => format!("segment {:02}", idx + 1),
+    RecordingTarget::AudioLab => "Audio Lab".to_string(),
+  };
+  state.status_msg.set(format!(
+    "Recording {target_label} ({sr}Hz/{ch}ch) — click Stop when finished"
+  ));
+  Ok(())
+}
+
+/// Stops the active microphone recording on the owning thread (`cpal::Stream`
+/// is `!Send`) and returns the captured [`AudioBuffer`] along with its
+/// [`RecordingTarget`].
+pub fn stop_mic_recording(state: &mut AppState) -> Option<(RecordingTarget, AudioBuffer)> {
+  let target = (state.recording_target)();
+  let rec_opt = state.recorder.write().take();
+  state.recording_target.set(None);
+  state.recording_peak.set(0.0);
+  state.recording_secs.set(0.0);
+
+  let (Some(target), Some(recorder)) = (target, rec_opt) else {
+    return None;
+  };
+
+  state.status_msg.set("Finalizing recording...".to_string());
+  match recorder.stop() {
+    Ok(buf) if !buf.samples.is_empty() => Some((target, buf)),
+    Ok(_) => {
+      state
+        .status_msg
+        .set("Recording was empty — check microphone permission or input level".to_string());
+      None
+    }
+    Err(e) => {
+      state.status_msg.set(format!("Stop recording failed: {e}"));
+      None
+    }
   }
 }
 

@@ -4,10 +4,13 @@ use crate::components::header::save_podcast_project;
 use crate::project::{
   LoudnessHealth, SegmentMediaOverride, format_db, format_timecode, mcp_client_config_json,
 };
-use crate::state::{AppState, InspectorTab, play_buffer};
+use crate::state::{
+  AppState, InspectorTab, RecordingTarget, play_buffer, start_mic_recording, stop_mic_recording,
+};
 use crate::studio_ops::{
   EpisodeExportFormat, align_recorded_segment, assemble_episode, check_external_project_reload,
-  draft_script_from_topic, export_episode_file, preset_voices_for, synthesize_segment,
+  draft_script_from_topic, export_episode_file, preset_voices_for, recording_output_path,
+  save_recorded_wav_atomic, synthesize_segment,
 };
 use dioxus::prelude::*;
 use phonon_ai::VoiceConfig;
@@ -608,6 +611,9 @@ fn CenterScriptDesk() -> Element {
   let show_mcp_panel = (state.show_mcp_panel)();
   let mcp_live_sync = (state.mcp_live_sync)();
   let project_path = state.project_path.read().clone();
+  let rec_target = (state.recording_target)();
+  let rec_peak = (state.recording_peak)();
+  let rec_secs = (state.recording_secs)();
 
   let total_segments = project.script.segments.len();
   let fresh_count = (0..total_segments)
@@ -995,21 +1001,63 @@ fn CenterScriptDesk() -> Element {
                   },
                 }
 
-                // Phase 2: Recorded Human Voice + Local Enhance + Text-Cut Bar
+                // Phase 2 & 3: Recorded Human Voice + In-App Mic + Local Enhance + Text-Cut Bar
                 div {
                   class: "flex flex-wrap items-center justify-between gap-2 pt-0.5 text-[11px]",
                   div {
                     class: "flex items-center gap-1.5 flex-wrap",
-                    if let Some(ref rec) = recorded_path {
+                    if rec_target == Some(RecordingTarget::Segment(idx)) {
+                      {
+                        let lang_for_stop = seg.language.clone();
+                        let vu_pct = (rec_peak.clamp(0.0, 1.0) * 100.0).round() as u32;
+                        let rec_tc = format_timecode(rec_secs);
+                        rsx! {
+                          div {
+                            class: "flex items-center gap-2 px-2 py-0.5 rounded bg-[#E05252]/15 border border-[#E05252]/60 text-[#E05252]",
+                            span { class: "inline-block w-2 h-2 rounded-full bg-[#E05252] animate-pulse" }
+                            span { class: "font-mono tabular-nums font-medium", "REC {rec_tc}" }
+                            div {
+                              class: "w-16 h-1.5 rounded bg-[#141619] overflow-hidden",
+                              div {
+                                class: "h-full bg-[#E05252] transition-all duration-75",
+                                style: "width: {vu_pct}%;",
+                              }
+                            }
+                            button {
+                              class: "px-2 py-0.5 rounded bg-[#E05252] text-[#141619] font-semibold hover:opacity-90",
+                              onclick: move |_| {
+                                let l = lang_for_stop.clone();
+                                async move {
+                                  run_stop_segment_recording(&mut state, idx, l).await;
+                                }
+                              },
+                              "■ Stop & Attach"
+                            }
+                          }
+                        }
+                      }
+                    } else if let Some(ref rec) = recorded_path {
                       {
                         let rec_short = short_filename(rec);
                         let rec_for_align = rec.clone();
                         let lang_for_align = seg.language.clone();
+                        let other_recording = rec_target.is_some();
                         rsx! {
                           span {
                             class: "px-2 py-0.5 rounded bg-[#38B2AC]/15 border border-[#38B2AC]/40 text-[#38B2AC] font-mono",
                             title: "{rec}",
                             "Rec: {rec_short}"
+                          }
+                          button {
+                            class: "px-2 py-0.5 rounded bg-[#252A31] border border-[#2D333C] text-[#E05252] hover:border-[#E05252] disabled:opacity-40",
+                            disabled: other_recording,
+                            title: "Re-record this segment directly from your microphone",
+                            onclick: move |_| {
+                              if let Err(e) = start_mic_recording(&mut state, RecordingTarget::Segment(idx)) {
+                                state.status_msg.set(e);
+                              }
+                            },
+                            "● Re-rec"
                           }
                           button {
                             class: if enhance_on {
@@ -1057,17 +1105,29 @@ fn CenterScriptDesk() -> Element {
                     } else {
                       {
                         let lang_for_attach = seg.language.clone();
+                        let other_recording = rec_target.is_some();
                         rsx! {
                           button {
+                            class: "px-2 py-0.5 rounded bg-[#252A31] border border-[#2D333C] text-[#E05252] hover:border-[#E05252] disabled:opacity-40 transition",
+                            disabled: other_recording,
+                            title: "Record this segment directly from your default microphone",
+                            onclick: move |_| {
+                              if let Err(e) = start_mic_recording(&mut state, RecordingTarget::Segment(idx)) {
+                                state.status_msg.set(e);
+                              }
+                            },
+                            "● Record Mic"
+                          }
+                          button {
                             class: "px-2 py-0.5 rounded bg-[#252A31] border border-[#2D333C] text-[#9AA4B2] hover:text-[#ECEFF4] hover:border-[#38B2AC] transition",
-                            title: "Attach a real human voice recording for text-based audio cutting and local voice enhancement",
+                            title: "Attach an existing voice recording file for text-based audio cutting and local voice enhancement",
                             onclick: move |_| {
                               let l = lang_for_attach.clone();
                               async move {
                                 run_attach_recording(&mut state, idx, l).await;
                               }
                             },
-                            "+ Attach Voice Recording"
+                            "+ Attach Audio"
                           }
                         }
                       }
@@ -1701,6 +1761,41 @@ async fn run_export_episode(
       .status_msg
       .set(format!("Exported {label} to {}", path.display())),
     Err(e) => state.status_msg.set(format!("Export failed: {e}")),
+  }
+}
+
+async fn run_stop_segment_recording(
+  state: &mut AppState,
+  seg_idx: usize,
+  language_hint: Option<String>,
+) {
+  let Some((_, buf)) = stop_mic_recording(state) else {
+    return;
+  };
+  let project_path = state.project_path.read().clone();
+  let label = format!("seg_{:02}", seg_idx + 1);
+  let out_path = recording_output_path(project_path.as_deref(), &label);
+  let save_path = out_path.clone();
+
+  let saved = tokio::task::spawn_blocking(move || save_recorded_wav_atomic(&save_path, &buf)).await;
+  match saved {
+    Ok(Ok(())) => {
+      let path_str = out_path.to_string_lossy().to_string();
+      state.mutate_project(|p| {
+        p.segment_overrides.insert(
+          seg_idx,
+          SegmentMediaOverride {
+            recorded_path: Some(path_str.clone()),
+            enhance_voice: true,
+            ..SegmentMediaOverride::default()
+          },
+        );
+      });
+      state.segment_audio.write().remove(&seg_idx);
+      run_align_recording(state, seg_idx, path_str, language_hint).await;
+    }
+    Ok(Err(e)) => state.status_msg.set(e),
+    Err(e) => state.status_msg.set(format!("Recording save task error: {e}")),
   }
 }
 

@@ -678,6 +678,70 @@ pub fn instantiate_active_plugins(
   out
 }
 
+/// Resolve the output path for an in-app microphone recording WAV file.
+///
+/// When a project file is open, saves alongside it under `<project_dir>/recordings/`;
+/// otherwise falls back to the platform cache directory (or system temp dir).
+pub fn recording_output_path(project_path: Option<&Path>, label: &str) -> PathBuf {
+  let base_dir = project_path
+    .and_then(|p| p.parent())
+    .filter(|p| !p.as_os_str().is_empty())
+    .map(|p| p.join("recordings"))
+    .unwrap_or_else(|| {
+      dirs::cache_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("phonon-studio")
+        .join("recordings")
+    });
+  let safe_label: String = label
+    .chars()
+    .map(|c| {
+      if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+        c
+      } else {
+        '_'
+      }
+    })
+    .take(32)
+    .collect();
+  let stem = if safe_label.trim_matches('_').is_empty() {
+    "take".to_string()
+  } else {
+    safe_label
+  };
+  let ts = SystemTime::now()
+    .duration_since(std::time::UNIX_EPOCH)
+    .map(|d| d.as_millis())
+    .unwrap_or(0);
+  let seq = STUDIO_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+  base_dir.join(format!("{stem}_{ts}_{seq}.wav"))
+}
+
+/// Atomically persist a recorded [`AudioBuffer`] as a 16-bit WAV file.
+pub fn save_recorded_wav_atomic(path: &Path, buffer: &AudioBuffer) -> Result<(), String> {
+  if let Some(parent) = path.parent()
+    && !parent.as_os_str().is_empty()
+  {
+    std::fs::create_dir_all(parent)
+      .map_err(|e| format!("Failed to create recording directory: {e}"))?;
+  }
+  let seq = STUDIO_TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+  let file_name = path
+    .file_name()
+    .map(|n| n.to_string_lossy().into_owned())
+    .unwrap_or_else(|| "recording.wav".to_string());
+  let tmp_path = path.with_file_name(format!(".{file_name}.{}.{seq}.tmp", std::process::id()));
+  if let Err(e) = phonon_wav::write_wav(&tmp_path, buffer) {
+    let _ = std::fs::remove_file(&tmp_path);
+    return Err(format!("Failed to write recording WAV: {e}"));
+  }
+  if let Err(e) = std::fs::rename(&tmp_path, path) {
+    let _ = std::fs::remove_file(&tmp_path);
+    return Err(format!("Failed to finalize recording WAV: {e}"));
+  }
+  Ok(())
+}
+
 /// Bake the active Audio Lab plugin chain into an owned copy of `buffer` for
 /// offline export so exported files match real-time playback.
 pub fn bake_plugins_into_buffer(
@@ -918,5 +982,21 @@ mod tests {
       reloaded.expect("valid project").script.title,
       "Edited by External MCP Agent"
     );
+  }
+
+  #[test]
+  fn test_recording_output_path_and_atomic_wav_save() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let proj_file = dir.path().join("ep01.phonon.json");
+    let out = recording_output_path(Some(&proj_file), "seg 01!");
+    assert_eq!(out.parent(), Some(dir.path().join("recordings").as_path()));
+    assert_eq!(out.extension().and_then(|e| e.to_str()), Some("wav"));
+
+    let buf = sine_buffer(440.0, 0.25, 16000, 0.4);
+    save_recorded_wav_atomic(&out, &buf).expect("save wav");
+    let loaded = phonon_io::read_audio(&out).expect("read back wav");
+    assert_eq!(loaded.sample_rate, 16000);
+    assert_eq!(loaded.channels, 1);
+    assert_eq!(loaded.samples.len(), buf.samples.len());
   }
 }

@@ -26,8 +26,29 @@ fn main() {
 }
 
 fn App() -> Element {
-  let state = use_hook(AppState::init);
+  let mut state = use_hook(AppState::init);
   use_context_provider(|| state);
+
+  // Poll live microphone input peak and elapsed duration at ~12.5 Hz while recording.
+  use_future(move || async move {
+    loop {
+      tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+      let sample = state
+        .recorder
+        .read()
+        .as_ref()
+        .map(|rec| (rec.input_peak(), rec.duration_secs(), rec.is_capped()));
+      if let Some((peak, secs, capped)) = sample {
+        state.recording_peak.set(peak);
+        state.recording_secs.set(secs);
+        if capped {
+          state
+            .status_msg
+            .set("Recording reached maximum duration cap — click Stop to save".to_string());
+        }
+      }
+    }
+  });
 
   rsx! {
     document::Stylesheet { href: TAILWIND_CSS }
