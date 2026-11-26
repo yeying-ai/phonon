@@ -80,51 +80,54 @@ pub fn write_mp3<P: AsRef<Path>>(path: P, buffer: &AudioBuffer, config: &Mp3Conf
     .build()
     .map_err(|e| PhononError::Wav(format!("Failed to build MP3 encoder: {e:?}")))?;
 
-  // Convert f32 samples to i16
-  let samples_i16: Vec<i16> = buffer
-    .samples
-    .iter()
-    .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
-    .collect();
-
-  // Stream encoded data directly to file
+  // Stream encoded data directly to file in bounded 8192-frame chunks so
+  // encoding long recordings uses O(1) scratch memory instead of duplicating
+  // the full PCM track.
+  const CHUNK_FRAMES: usize = 8192;
   let file = File::create(path.as_ref()).map_err(PhononError::Io)?;
   let mut writer = BufWriter::new(file);
 
-  let max_out_size =
-    mp3lame_encoder::max_required_buffer_size(samples_i16.len() / buffer.channels as usize);
-  let mut encode_buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); max_out_size.max(7200)];
+  let max_out_size = mp3lame_encoder::max_required_buffer_size(CHUNK_FRAMES).max(7200);
+  let mut encode_buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); max_out_size];
 
-  // Encode based on channel count
-  let encoded_size = if buffer.channels == 1 {
-    let input = mp3lame_encoder::MonoPcm(&samples_i16);
-    encoder
-      .encode(input, &mut encode_buf)
-      .map_err(|e| PhononError::Wav(format!("MP3 encode error: {e:?}")))?
-  } else {
-    // Deinterleave stereo samples
-    let frame_count = samples_i16.len() / 2;
-    let mut left = Vec::with_capacity(frame_count);
-    let mut right = Vec::with_capacity(frame_count);
-    for i in 0..frame_count {
-      left.push(samples_i16[i * 2]);
-      right.push(samples_i16[i * 2 + 1]);
+  if buffer.channels == 1 {
+    let mut mono_i16 = Vec::with_capacity(CHUNK_FRAMES);
+    for chunk in buffer.samples.chunks(CHUNK_FRAMES) {
+      mono_i16.clear();
+      mono_i16.extend(chunk.iter().map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16));
+      let input = mp3lame_encoder::MonoPcm(&mono_i16);
+      let encoded_size = encoder
+        .encode(input, &mut encode_buf)
+        .map_err(|e| PhononError::Wav(format!("MP3 encode error: {e:?}")))?;
+      // SAFETY: encode returns the number of valid initialized bytes.
+      let encoded_slice: &[u8] =
+        unsafe { std::slice::from_raw_parts(encode_buf.as_ptr().cast::<u8>(), encoded_size) };
+      writer.write_all(encoded_slice).map_err(PhononError::Io)?;
     }
-
-    let input = mp3lame_encoder::DualPcm {
-      left: &left,
-      right: &right,
-    };
-    encoder
-      .encode(input, &mut encode_buf)
-      .map_err(|e| PhononError::Wav(format!("MP3 encode error: {e:?}")))?
-  };
-
-  // Write encoded bytes directly to file
-  // SAFETY: encode returns the number of valid initialized bytes
-  let encoded_slice: &[u8] =
-    unsafe { std::slice::from_raw_parts(encode_buf.as_ptr().cast::<u8>(), encoded_size) };
-  writer.write_all(encoded_slice).map_err(PhononError::Io)?;
+  } else {
+    let mut left = Vec::with_capacity(CHUNK_FRAMES);
+    let mut right = Vec::with_capacity(CHUNK_FRAMES);
+    let aligned_len = buffer.samples.len() - (buffer.samples.len() % 2);
+    for chunk in buffer.samples[..aligned_len].chunks(CHUNK_FRAMES * 2) {
+      left.clear();
+      right.clear();
+      for frame in chunk.chunks_exact(2) {
+        left.push((frame[0].clamp(-1.0, 1.0) * 32767.0) as i16);
+        right.push((frame[1].clamp(-1.0, 1.0) * 32767.0) as i16);
+      }
+      let input = mp3lame_encoder::DualPcm {
+        left: &left,
+        right: &right,
+      };
+      let encoded_size = encoder
+        .encode(input, &mut encode_buf)
+        .map_err(|e| PhononError::Wav(format!("MP3 encode error: {e:?}")))?;
+      // SAFETY: encode returns the number of valid initialized bytes.
+      let encoded_slice: &[u8] =
+        unsafe { std::slice::from_raw_parts(encode_buf.as_ptr().cast::<u8>(), encoded_size) };
+      writer.write_all(encoded_slice).map_err(PhononError::Io)?;
+    }
+  }
 
   // Flush remaining data from encoder
   let mut flush_buf: Vec<MaybeUninit<u8>> = vec![MaybeUninit::uninit(); 7200];

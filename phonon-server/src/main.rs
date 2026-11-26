@@ -246,40 +246,36 @@ async fn podcast_generate_handler(
   }
 }
 
+#[derive(Debug, Deserialize)]
+struct PodcastPreviewRequest {
+  script: PodcastScript,
+  #[serde(default)]
+  segment_index: usize,
+}
+
 async fn podcast_preview_handler(
   State(tts): State<AnyTts>,
-  Json(req): Json<serde_json::Value>,
+  Json(req): Json<PodcastPreviewRequest>,
 ) -> impl IntoResponse {
-  let script_value = match req.get("script") {
-    Some(v) => v.clone(),
-    None => return bad_request("Missing 'script' field"),
-  };
-
-  let script: PodcastScript = match serde_json::from_value(script_value) {
-    Ok(s) => s,
-    Err(e) => return bad_request(format!("Invalid script: {e}")),
-  };
-
-  if let Err(e) = check_untrusted_script(&script) {
+  if let Err(e) = check_untrusted_script(&req.script) {
     return bad_request(e);
   }
 
-  let segment_index = req
-    .get("segment_index")
-    .and_then(|v| v.as_u64())
-    .unwrap_or(0) as usize;
-
   info!(
-      title = %script.title,
-      segment = segment_index,
+      title = %req.script.title,
+      segment = req.segment_index,
       "Podcast preview request"
   );
 
   let pipeline = PodcastPipeline::new(tts);
 
-  match pipeline.preview_segment(&script, segment_index).await {
+  match pipeline
+    .preview_segment(&req.script, req.segment_index)
+    .await
+  {
     Ok(buffer) => wav_response(buffer).await,
-    Err(e) => bad_request(e),
+    Err(phonon_podcast::PodcastError::Script(e)) => bad_request(e),
+    Err(e) => internal_error(e),
   }
 }
 

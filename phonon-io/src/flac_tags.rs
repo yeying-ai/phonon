@@ -65,6 +65,8 @@ pub fn attach_flac_tag(path: impl AsRef<Path>, tags: &PodcastTags) -> Result<()>
   }
 
   if let Some(cover) = &tags.cover {
+    // Replace existing front cover instead of stacking duplicate picture blocks.
+    tag.remove_picture_type(PictureType::CoverFront);
     tag.add_picture(
       cover.mime.as_str().to_string(),
       PictureType::CoverFront,

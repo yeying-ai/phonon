@@ -15,6 +15,15 @@ pub fn read_wav<P: AsRef<Path>>(path: P) -> Result<AudioBuffer> {
     .map_err(|e| PhononError::Wav(format!("Failed to open file: {}", e)))?;
   let spec = reader.spec();
   debug!(?spec, "WAV spec");
+  if spec.sample_rate == 0 {
+    return Err(PhononError::InvalidSampleRate(0));
+  }
+  if spec.channels == 0 {
+    return Err(PhononError::ChannelMismatch {
+      expected: 1,
+      actual: 0,
+    });
+  }
 
   let samples: Vec<f32> = match spec.sample_format {
     hound::SampleFormat::Float => reader
@@ -54,7 +63,7 @@ pub fn read_wav<P: AsRef<Path>>(path: P) -> Result<AudioBuffer> {
 #[instrument(skip(buffer, path), fields(path = %path.as_ref().display(), duration = buffer.duration_secs()))]
 pub fn write_wav<P: AsRef<Path>>(path: P, buffer: &AudioBuffer) -> Result<()> {
   info!("Writing WAV file");
-  let spec = spec_for(buffer);
+  let spec = spec_for(buffer)?;
   let writer = hound::WavWriter::create(path, spec)
     .map_err(|e| PhononError::Wav(format!("Failed to create file: {}", e)))?;
   write_samples(writer, buffer)?;
@@ -67,19 +76,28 @@ pub fn write_wav<P: AsRef<Path>>(path: P, buffer: &AudioBuffer) -> Result<()> {
 /// upload it to an API.
 pub fn encode_wav(buffer: &AudioBuffer) -> Result<Vec<u8>> {
   let mut bytes = std::io::Cursor::new(Vec::new());
-  let writer = hound::WavWriter::new(&mut bytes, spec_for(buffer))
+  let writer = hound::WavWriter::new(&mut bytes, spec_for(buffer)?)
     .map_err(|e| PhononError::Wav(format!("Failed to start WAV: {}", e)))?;
   write_samples(writer, buffer)?;
   Ok(bytes.into_inner())
 }
 
-fn spec_for(buffer: &AudioBuffer) -> hound::WavSpec {
-  hound::WavSpec {
+fn spec_for(buffer: &AudioBuffer) -> Result<hound::WavSpec> {
+  if buffer.sample_rate == 0 {
+    return Err(PhononError::InvalidSampleRate(0));
+  }
+  if buffer.channels == 0 {
+    return Err(PhononError::ChannelMismatch {
+      expected: 1,
+      actual: 0,
+    });
+  }
+  Ok(hound::WavSpec {
     channels: buffer.channels,
     sample_rate: buffer.sample_rate,
     bits_per_sample: 16,
     sample_format: hound::SampleFormat::Int,
-  }
+  })
 }
 
 fn write_samples<W: std::io::Write + std::io::Seek>(

@@ -18,7 +18,19 @@ async fn main() -> std::io::Result<()> {
   // File tools are confined to PHONON_MCP_ROOT, or the launch directory.
   let fs_root = match std::env::var_os("PHONON_MCP_ROOT") {
     Some(dir) => std::path::PathBuf::from(dir),
-    None => std::env::current_dir()?,
+    None => {
+      let cwd = std::env::current_dir()?;
+      tracing::warn!(
+        root = %cwd.display(),
+        "PHONON_MCP_ROOT is not set; sandboxing file tools to current working directory"
+      );
+      if cwd.parent().is_none() {
+        tracing::warn!(
+          "current working directory is filesystem root; set PHONON_MCP_ROOT to restrict file access"
+        );
+      }
+      cwd
+    }
   };
   tracing::info!(root = %fs_root.display(), "file tools sandboxed");
 

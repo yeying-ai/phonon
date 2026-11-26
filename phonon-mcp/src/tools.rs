@@ -373,7 +373,7 @@ fn register_audio_info(r: &mut ToolRegistry) {
         "samples": buf.samples.len(),
         "peak": phonon_core::peak(&buf),
         "rms": phonon_core::rms(&buf),
-        "dbfs": phonon_core::dbfs(&buf),
+        "dbfs": finite_or_null(phonon_core::dbfs(&buf)),
       }))
     })
   });
@@ -630,6 +630,11 @@ fn register_audio_pan(r: &mut ToolRegistry) {
     Box::pin(async move {
       let PanArgs { handle, position } =
         serde_json::from_value(args).map_err(|e| McpError::InvalidArgs(e.to_string()))?;
+      if !(-1.0..=1.0).contains(&position) {
+        return Err(McpError::InvalidArgs(
+          "position must be within -1.0..=1.0".to_string(),
+        ));
+      }
       let buf = registry.get(&handle)?;
       let new_buf = if buf.channels == 1 {
         phonon_core::pan_mono_to_stereo(&buf, position).map_err(McpError::from)?

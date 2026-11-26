@@ -8,16 +8,18 @@ REST API server for the Phonon audio engine, built with axum.
 |---|---|---|
 | GET | `/health` | Health check |
 | POST | `/api/tts` | Text-to-speech synthesis (returns WAV) |
-| POST | `/api/podcast/generate` | Generate podcast from JSON script |
-| POST | `/api/podcast/preview` | Preview a single segment |
+| POST | `/api/podcast/generate` | Generate podcast from JSON script (returns WAV) |
+| POST | `/api/podcast/preview` | Preview a single segment (returns WAV) |
+| POST | `/api/podcast/episode` | Generate publish-ready tagged MP3 + chapters + SRT (JSON) |
+| POST | `/api/lufs` | Measure BS.1770 loudness report of uploaded audio |
 
 ## Usage
 
 ```bash
-# Start with default bind address (0.0.0.0:3000)
+# Start with default loopback bind address (127.0.0.1:3000)
 cargo run -p phonon-server
 
-# Custom bind address
+# Custom bind address (add authentication/TLS behind a reverse proxy if exposed)
 PHONON_BIND=127.0.0.1:8080 cargo run -p phonon-server
 ```
 

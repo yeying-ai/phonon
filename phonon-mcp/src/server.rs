@@ -200,8 +200,33 @@ impl Server {
       }
     };
 
+    if !req.is_object() {
+      return Some(json!({
+        "jsonrpc": "2.0",
+        "id": Value::Null,
+        "error": { "code": -32600, "message": "Invalid Request: expected JSON object" }
+      }));
+    }
+
     let id = req.get("id").cloned();
-    let method = req.get("method").and_then(|m| m.as_str()).unwrap_or("");
+    if req.get("jsonrpc").and_then(|v| v.as_str()) != Some("2.0") {
+      return Some(json!({
+        "jsonrpc": "2.0",
+        "id": id.unwrap_or(Value::Null),
+        "error": { "code": -32600, "message": "Invalid Request: jsonrpc must be \"2.0\"" }
+      }));
+    }
+    let Some(method) = req
+      .get("method")
+      .and_then(|m| m.as_str())
+      .filter(|m| !m.is_empty())
+    else {
+      return Some(json!({
+        "jsonrpc": "2.0",
+        "id": id.unwrap_or(Value::Null),
+        "error": { "code": -32600, "message": "Invalid Request: missing string 'method'" }
+      }));
+    };
     let params = req.get("params").cloned().unwrap_or(Value::Null);
     debug!(method = method, id = ?id, "incoming request");
 
