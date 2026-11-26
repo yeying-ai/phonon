@@ -270,3 +270,11 @@
 - [x] **M5** `phonon-video` 加固：`ffmpeg`/`ffprobe` 统一 `-nostdin`、`Stdio::null()`、`kill_on_drop(true)`、超时、`-protocol_whitelist file,pipe`、`--` 与输出路径协议/同文件校验，直接传 `&Path`，临时文件改 `into_temp_path()`，读写移入 `spawn_blocking`
 - [x] **M6** 解压炸弹与 OOM 防护：`phonon-io` 新增 `read_audio_limited`/`decode_audio_limited` 并复用 `SampleBuffer`；`phonon-mcp` 限制单行 4 MiB、限制 `audio_resample` 采样率范围、按注册表剩余配额解码并限 1024 句柄；`phonon-server` 提前拒绝 `AssetSource::Generated`、校验 `bgm_volume`/`normalize_target`、限制 `/api/lufs` 解码样本数并增加并发/超时中间件
 - [x] **M7** `CachingTts` 原子写盘与指纹隔离：改同目录临时文件 + `rename` 并移入 `spawn_blocking`；`TtsProvider` 新增 `cache_fingerprint()` + 长度前缀/显式 Option tag 哈希；补齐 MiniMax `format` 配置传递与并发缓存单测
+
+## v0.8.3 — 系统评估 P1 修复与性能提质 ✅ 已完成
+
+- [x] **N1** `phonon-engine` 与 `DspPlugin` 实时安全：`DspPlugin::prepare()` 在 `add_plugin` 预分配滤波状态；`PluginParam`/`set_volume` 忽略非有限值；修 `play`/`clear`/`append_samples`/`write_data` 竞态与 `streaming` 泄漏，`effect_count` 改无锁原子；新增 `I16`/`U16` 设备支持
+- [x] **N2** `phonon-core` LUFS 提速与声学边界：`measure_loudness` 合并为单遍 K-weighting、短时步长对齐 EBU 100ms、re-export `limit_true_peak`、消除冗余二次限幅；修 `compressor` Inf 污染与 `fade`/`crossfade`/`mix` 帧对齐及尾部一致性
+- [x] **N3** `phonon-ai` 可靠性：`retry_transient` 加抖动、`env_key` 自动 trim、`WhisperStt` 接入重试；`Endpoint.api_key` 用 `ApiKey` 脱敏；修 `AnyTts::synthesize_streaming` 绕过 `max_chars`、STT `max_secs==0`、Qwen 10 MB 字节切分与非限流错误误重试
+- [x] **N4** `phonon-podcast` 与 `phonon-cli`：`generate_to_file` 按扩展名编码、`preview_segment` 补齐 `segment.language`、`level_segments` 限最大 +24 dB、`validate()` 校验 `PipelineConfig`、修章节越界与孤立标点字幕；CLI tracing 固定写 stderr、`lufs --target` 缺 `--output` 报错
+- [x] **N5** `phonon-io` / `phonon-wav` / `phonon-server` / `phonon-mcp`：`write_mp3` 改为 8192 帧流式分块编码、`attach_flac_tag` 替换旧封面、`phonon-wav` 校验 0 采样率/声道；`podcast_preview_handler` 强类型与正确状态码、同步 `phonon-server/README.md`；MCP 校验 JSON-RPC 2.0 请求对象、`audio_pan` 范围校验、`audio_info` 有限值安全及缺 `PHONON_MCP_ROOT` 告警
