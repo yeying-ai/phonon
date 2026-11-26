@@ -11,6 +11,7 @@ use components::{
 use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 use dioxus_logger::tracing;
+use dioxus_shadcn::{DensityProvider, UiDensity};
 use project::StudioProject;
 use state::{AppState, WorkspaceTab, load_audio};
 use std::collections::HashMap;
@@ -52,27 +53,30 @@ fn App() -> Element {
 
   rsx! {
     document::Stylesheet { href: TAILWIND_CSS }
-    div {
-      class: "flex flex-col h-dvh bg-[#141619] text-[#ECEFF4] overflow-hidden",
+    DensityProvider {
+      density: UiDensity::Comfortable,
+      div {
+        class: "dark flex flex-col h-dvh bg-background text-foreground overflow-hidden",
 
-      // Global drag-and-drop: supports both .json scripts and audio files
-      ondragover: move |evt| { evt.prevent_default(); },
-      ondrop: move |evt| {
-        evt.prevent_default();
-        let mut s = state;
-        async move {
-          handle_drop(&mut s, evt).await;
+        // Global drag-and-drop: supports both .json scripts and audio files
+        ondragover: move |evt| { evt.prevent_default(); },
+        ondrop: move |evt| {
+          evt.prevent_default();
+          let mut s = state;
+          async move {
+            handle_drop(&mut s, evt).await;
+          }
+        },
+
+        Header {}
+
+        match (state.active_tab)() {
+          WorkspaceTab::PodcastStudio => rsx! { PodcastStudioView {} },
+          WorkspaceTab::AudioLab => rsx! { AudioLabView {} },
         }
-      },
 
-      Header {}
-
-      match (state.active_tab)() {
-        WorkspaceTab::PodcastStudio => rsx! { PodcastStudioView {} },
-        WorkspaceTab::AudioLab => rsx! { AudioLabView {} },
+        Transport {}
       }
-
-      Transport {}
     }
   }
 }

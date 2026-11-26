@@ -7,3 +7,6 @@ phonon-wasm/www/pkg/
 
 # Machine-local cargo config (target-dir, linker flags)
 .cargo/config.toml
+
+# Machine-local dioxus-shadcn stylesheet containing Cargo registry @source path
+phonon-studio/assets/dioxus-shadcn.css

@@ -2,7 +2,7 @@
 name = "phonon-studio"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.88"
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -15,6 +15,31 @@ publish = false
 blake3.workspace = true
 dioxus.workspace = true
 dioxus-logger.workspace = true
+dioxus-shadcn = { version = "0.7.0", default-features = false, features = [
+  "badge",
+  "button",
+  "card",
+  "checkbox",
+  "collapsible",
+  "dialog",
+  "empty",
+  "input",
+  "kbd",
+  "label",
+  "native-select",
+  "resizable",
+  "scroll-area",
+  "select",
+  "separator",
+  "sheet",
+  "slider",
+  "sonner",
+  "spinner",
+  "switch",
+  "tabs",
+  "textarea",
+  "tooltip",
+] }
 dirs.workspace = true
 phonon-ai.workspace = true
 phonon-core.workspace = true
