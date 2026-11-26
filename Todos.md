@@ -313,6 +313,7 @@
   - DONE (`5a66f48`): `Header` 与 `Transport` 全面迁至 `dioxus-shadcn` (`Tabs` / `Button` / `Badge` / `Separator` / `Tooltip` / `Slider`) 与语义颜色 Token；Tailwind v4 构建 59ms、clippy 0 告警、16 单测全绿（桌面交互流畅度随 U5 整窗验收实测）
 - [x] **U3** 迁移 `AudioLab` 及其 4 个功能面板（`EffectsPanel` / `EqPanel` / `PluginBrowser` / `ExportPanel`），实测 10+ 并发 `Slider`、`NativeSelect`/`Select`、`Checkbox`/`Switch`、`Card`、`Empty`
   - DONE (`b5c8d48`): 完成 `AudioLabView`（`ResizablePanelGroup` + `Empty`）、`WaveformView`、`InfoPanel` 及 4 个 DSP/导出面板迁移，全部通过 Tailwind v4（58ms）、fmt、clippy 与 16 单测
-- [ ] **U4** 拆分并迁移 `PodcastStudioView`（将 1917 行拆为 `components/studio/` 子模块），接入 `ResizablePanelGroup` 三栏、`Dialog`/`Sheet`（AI Draft & MCP Sync）、`Tabs`（Underline Inspector）、`Card` / `Input` / `Textarea` / `Button` (`loading`) / `Badge` / `Sonner`
+- [x] **U4** 拆分并迁移 `PodcastStudioView`（将 1917 行拆为 `components/studio/` 子模块），接入 `ResizablePanelGroup` 三栏、`Dialog`/`Sheet`（AI Draft & MCP Sync）、`Tabs`（Underline Inspector）、`Card` / `Input` / `Textarea` / `Button` (`loading`) / `Badge` / `Sonner`
+  - DONE (`d1d37c4`): 拆分为 `components/podcast_studio/{mod,left_rail,script_desk,episode_inspector,actions}.rs`，接入三栏 `ResizablePanelGroup`、AI Draft & MCP `Dialog`、`Tabs`（Underline）与全局 `Sonner` 通知队列，收敛至 17 个已用 features，fmt/clippy/16 单测全绿
 - [ ] **U5** Desktop WebView 全链路交互验收与 `FB-studio-*` 上游实测缺陷清单沉淀（区分 `dioxus-ui` 真实缺陷与业务适配）
 - [ ] **U6** 消费上游 `dioxus-shadcn` 修复版本（升级 crates.io 版本、重跑 `dxui init` 验证 `@source` 自动更新、清理临时绕过、更新文档与全工作区门禁）
