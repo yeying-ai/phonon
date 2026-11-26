@@ -161,8 +161,8 @@ mod tests {
     };
 
     // Add DC (1.0) and Nyquist (1.0 * (-1)^n)
-    for i in 0..100 {
-      buffer.samples[i] = 1.0 + if i % 2 == 0 { 0.5 } else { -0.5 };
+    for (i, sample) in buffer.samples.iter_mut().enumerate() {
+      *sample = 1.0 + if i % 2 == 0 { 0.5 } else { -0.5 };
     }
 
     // Apply Low Pass at 1000Hz (well below Nyquist 22050Hz)

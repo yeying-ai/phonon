@@ -5,7 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 authors.workspace = true
 description = "Command-line interface for the Phonon audio engine: convert/normalize/lufs/tag-mp3/tts/podcast"
 keywords = ["audio", "cli", "phonon", "tts", "mp3"]

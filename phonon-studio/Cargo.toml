@@ -5,7 +5,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 authors.workspace = true
 description = "Desktop GUI for the Phonon audio engine — Dioxus-based studio with effect chain, EQ, spectrum and plugin browser"
 keywords = ["audio", "gui", "dioxus", "phonon"]

@@ -17,9 +17,7 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/yuxuetr/phonon"
-homepage = "https://github.com/yuxuetr/phonon"
 authors = ["yuxuetr"]
-readme = "README.md"
 
 [workspace.dependencies]
 # Internal crates — version pinned to the workspace release line so
