@@ -291,7 +291,7 @@
 ## v0.9.1 — Phonon Studio Phase 2（文本剪音频 + 本地语音增强 + MCP 工程联动）
 
 - [x] **P2-1** `phonon-core` 纯 Rust 语音后期内核：`splice_ranges`（微交叉淡化非破坏性拼接）、`detect_speech_regions`（离线静音切分）与 `voice_enhance`（STFT 频谱降噪 + 广播人声链）
-- [ ] **P2-2** `phonon-mcp` 工程与语音工具扩展：新增 `audio_enhance_voice`、`audio_splice` 及受 `PHONON_MCP_ROOT` 约束的 5 个 `studio_*` 原子协同编辑工具
+- [x] **P2-2** `phonon-mcp` 工程与语音工具扩展：新增 `audio_enhance_voice`、`audio_splice` 及受 `PHONON_MCP_ROOT` 约束的 5 个 `studio_*` 原子协同编辑工具
 - [ ] **P2-3** `phonon-studio` Phase 2 内核：段落录音挂载与 STT 词/句对齐（无 Key 自动退化为离线静音切分）、口癖自动识别、非破坏性裁剪 + 语音增强接入拼装管线、MCP 文件热同步逻辑 + 单元测试
 - [ ] **P2-4** `phonon-studio` Phase 2 界面：段内「改文本即剪音频」可点击词条/一键删口癖/录音增强开关、Audio Lab 一键播音腔与自动去静音、顶栏 MCP Live Sync 与配置面板
 - [ ] **P2-5** Tailwind v4 构建、全工作区质量门禁与文档更新（`studio-architecture.md`、`mcp-tools.md`、`Todos.md`）

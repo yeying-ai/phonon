@@ -46,7 +46,7 @@ pub struct ToolRegistry {
   /// Directory that `audio_load` / `audio_save` are confined to. Paths come
   /// from the LLM, so they are resolved against this root and rejected if
   /// they escape it (including via `..` or symlinks).
-  fs_root: PathBuf,
+  pub(crate) fs_root: PathBuf,
 }
 
 impl ToolRegistry {
@@ -197,7 +197,7 @@ struct HandleResult {
 
 /// Move `buf` into the registry and describe the new handle. The metadata
 /// is read before the move, so no PCM is copied.
-fn store(registry: &AssetRegistry, buf: AudioBuffer) -> Result<Value, McpError> {
+pub(crate) fn store(registry: &AssetRegistry, buf: AudioBuffer) -> Result<Value, McpError> {
   let (duration_secs, sample_rate, channels) = (buf.duration_secs(), buf.sample_rate, buf.channels);
   let handle = registry.insert(buf)?;
   Ok(serde_json::to_value(HandleResult {
@@ -229,7 +229,7 @@ fn ensure_within(root: &Path, resolved: PathBuf, requested: &str) -> Result<Path
 
 /// Resolves a path to read: it must exist and, after following symlinks,
 /// lie inside `root`. Relative paths are taken relative to `root`.
-fn resolve_for_read(root: &Path, path: &str) -> Result<PathBuf, McpError> {
+pub(crate) fn resolve_for_read(root: &Path, path: &str) -> Result<PathBuf, McpError> {
   let root = canonical_root(root)?;
   let resolved = root
     .join(path)
@@ -241,7 +241,7 @@ fn resolve_for_read(root: &Path, path: &str) -> Result<PathBuf, McpError> {
 /// Resolves a path to write: its parent directory must exist inside `root`,
 /// and an existing target (file or symlink) is only replaced with
 /// `overwrite`, and only if it also resolves inside `root`.
-fn resolve_for_write(root: &Path, path: &str, overwrite: bool) -> Result<PathBuf, McpError> {
+pub(crate) fn resolve_for_write(root: &Path, path: &str, overwrite: bool) -> Result<PathBuf, McpError> {
   let root = canonical_root(root)?;
   let joined = root.join(path);
   let name = joined
@@ -290,6 +290,9 @@ fn register_builtins(r: &mut ToolRegistry) {
 
   // measure
   register_audio_loudness(r);
+
+  // Phase 2 voice enhancement, splice, and Studio project co-editing
+  crate::studio_tools::register_phase2_tools(r);
 }
 
 fn register_audio_load(r: &mut ToolRegistry) {
@@ -960,6 +963,13 @@ mod tests {
       "audio_pan",
       "audio_resample",
       "audio_loudness",
+      "audio_enhance_voice",
+      "audio_splice",
+      "studio_get_project",
+      "studio_edit_segment",
+      "studio_add_segment",
+      "studio_delete_segment",
+      "studio_set_mastering",
     ] {
       assert!(names.contains(&expected), "missing tool: {}", expected);
     }

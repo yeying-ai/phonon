@@ -21,6 +21,7 @@
 pub mod error;
 pub mod registry;
 pub mod server;
+mod studio_tools;
 pub mod tools;
 
 pub use error::McpError;
