@@ -6,13 +6,9 @@
 //! - a `description` shown to the LLM
 //! - a handler that takes JSON arguments and returns a JSON result
 //!
-//! Tools are grouped by category but all live in a flat `ToolRegistry`.
-//! Categories — basic, dsp, measure, ai, pipeline — are documented in
-//! `RoadMap.md`.
-//!
-//! NOTE: AI / pipeline tools are placeholders that error with a helpful
-//! message until a provider is plugged in via `with_tts` etc. Pure-DSP
-//! tools work out of the box.
+//! Tools are grouped by category (basic, DSP, voice/splice, measure, Studio
+//! co-editing) and registered in a flat `ToolRegistry`. All file operations
+//! are confined to `PHONON_MCP_ROOT`.
 
 use crate::error::McpError;
 use crate::registry::{AssetRegistry, AudioHandle};

@@ -7,7 +7,11 @@
 
 use crate::error::McpError;
 use crate::tools::{Tool, ToolHandler, ToolRegistry, resolve_for_read, resolve_for_write, store};
-use phonon_core::{VoiceEnhanceConfig, enhance_voice, measure_loudness, splice_ranges};
+use phonon_core::algorithms::eq::{self, EqBand};
+use phonon_core::algorithms::filters::FilterType;
+use phonon_core::{
+  CompressorConfig, VoiceEnhanceConfig, compress, enhance_voice, measure_loudness, splice_ranges,
+};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 use std::path::Path;
@@ -16,11 +20,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static ATOMIC_SEQ: AtomicU64 = AtomicU64::new(0);
 
-/// Register Phase 2 voice DSP (`audio_enhance_voice`, `audio_splice`) and
-/// Studio project co-editing tools (`studio_*`).
+/// Register Phase 2 voice DSP (`audio_enhance_voice`, `audio_splice`),
+/// parametric EQ/dynamics (`audio_eq`, `audio_compress`), and Studio project
+/// co-editing tools (`studio_*`).
 pub(crate) fn register_phase2_tools(r: &mut ToolRegistry) {
   register_audio_enhance_voice(r);
   register_audio_splice(r);
+  register_audio_eq(r);
+  register_audio_compress(r);
   register_studio_get_project(r);
   register_studio_edit_segment(r);
   register_studio_add_segment(r);
@@ -128,6 +135,253 @@ struct SpliceArgs {
 
 fn default_crossfade() -> f64 {
   0.015
+}
+
+#[derive(Debug, Deserialize)]
+struct EqBandArg {
+  filter_type: String,
+  freq_hz: f64,
+  #[serde(default = "default_eq_q")]
+  q: f64,
+  #[serde(default)]
+  gain_db: f64,
+}
+
+fn default_eq_q() -> f64 {
+  1.0
+}
+
+#[derive(Debug, Deserialize)]
+struct EqArgs {
+  handle: crate::registry::AudioHandle,
+  #[serde(default)]
+  preset: Option<String>,
+  #[serde(default)]
+  bands: Option<Vec<EqBandArg>>,
+}
+
+fn register_audio_eq(r: &mut ToolRegistry) {
+  let registry = r.registry.clone();
+  let handler: ToolHandler = Arc::new(move |args| {
+    let registry = registry.clone();
+    Box::pin(async move {
+      let a: EqArgs =
+        serde_json::from_value(args).map_err(|e| McpError::InvalidArgs(e.to_string()))?;
+      let mut bands = match a.preset.as_deref() {
+        None | Some("flat") => eq::presets::flat(),
+        Some("voice") => eq::presets::voice(),
+        Some("bass_heavy") => eq::presets::bass_heavy(),
+        Some("bright") => eq::presets::bright(),
+        Some(other) => {
+          return Err(McpError::InvalidArgs(format!(
+            "unknown EQ preset '{other}' (expected 'voice', 'bass_heavy', 'bright', or 'flat')"
+          )));
+        }
+      };
+
+      if let Some(custom) = a.bands {
+        if custom.len() > 32 {
+          return Err(McpError::InvalidArgs(
+            "bands cannot exceed 32 entries".to_string(),
+          ));
+        }
+        for b in custom {
+          let ft = match b.filter_type.as_str() {
+            "peaking" => FilterType::Peaking,
+            "low_shelf" => FilterType::LowShelf,
+            "high_shelf" => FilterType::HighShelf,
+            "low_pass" => FilterType::LowPass,
+            "high_pass" => FilterType::HighPass,
+            "band_pass" => FilterType::BandPass,
+            "notch" => FilterType::Notch,
+            other => {
+              return Err(McpError::InvalidArgs(format!(
+                "unknown filter_type '{other}'"
+              )));
+            }
+          };
+          if !b.freq_hz.is_finite() || b.freq_hz <= 0.0 || b.freq_hz > 96_000.0 {
+            return Err(McpError::InvalidArgs(
+              "freq_hz must be finite and within (0, 96000]".to_string(),
+            ));
+          }
+          if !b.q.is_finite() || b.q <= 0.0 || b.q > 50.0 {
+            return Err(McpError::InvalidArgs(
+              "q must be finite and within (0, 50]".to_string(),
+            ));
+          }
+          if !b.gain_db.is_finite() || !(-24.0..=24.0).contains(&b.gain_db) {
+            return Err(McpError::InvalidArgs(
+              "gain_db must be finite and within [-24, 24]".to_string(),
+            ));
+          }
+          bands.push(EqBand::new(ft, b.freq_hz, b.q, b.gain_db));
+        }
+      }
+
+      let src = registry.get(&a.handle)?;
+      let band_count = bands.len();
+      let processed = tokio::task::spawn_blocking(move || eq::with_eq(&src, &bands))
+        .await
+        .map_err(|e| McpError::Io(format!("eq task failed: {e}")))?;
+      let mut res = store(&registry, processed)?;
+      if let Some(obj) = res.as_object_mut() {
+        obj.insert("bands_applied".to_string(), json!(band_count));
+      }
+      Ok(res)
+    })
+  });
+
+  r.register(Tool {
+    name: "audio_eq".into(),
+    description:
+      "Apply a multi-band parametric equalizer preset (voice/bass_heavy/bright/flat) and/or custom biquad bands."
+        .into(),
+    input_schema: json!({
+      "type": "object",
+      "properties": {
+        "handle": { "type": "string", "description": "UUID handle of an audio buffer" },
+        "preset": {
+          "type": "string",
+          "enum": ["voice", "bass_heavy", "bright", "flat"],
+          "description": "Optional built-in EQ preset"
+        },
+        "bands": {
+          "type": "array",
+          "description": "Optional custom EQ bands appended after any preset",
+          "items": {
+            "type": "object",
+            "properties": {
+              "filter_type": {
+                "type": "string",
+                "enum": ["peaking", "low_shelf", "high_shelf", "low_pass", "high_pass", "band_pass", "notch"]
+              },
+              "freq_hz": { "type": "number", "exclusiveMinimum": 0.0, "maximum": 96000.0 },
+              "q": { "type": "number", "exclusiveMinimum": 0.0, "maximum": 50.0 },
+              "gain_db": { "type": "number", "minimum": -24.0, "maximum": 24.0 }
+            },
+            "required": ["filter_type", "freq_hz"]
+          }
+        }
+      },
+      "required": ["handle"]
+    }),
+    handler,
+  });
+}
+
+#[derive(Debug, Deserialize)]
+struct CompressArgs {
+  handle: crate::registry::AudioHandle,
+  #[serde(default)]
+  preset: Option<String>,
+  #[serde(default)]
+  threshold_db: Option<f32>,
+  #[serde(default)]
+  ratio: Option<f32>,
+  #[serde(default)]
+  attack_secs: Option<f64>,
+  #[serde(default)]
+  release_secs: Option<f64>,
+  #[serde(default)]
+  makeup_gain_db: Option<f32>,
+}
+
+fn register_audio_compress(r: &mut ToolRegistry) {
+  let registry = r.registry.clone();
+  let handler: ToolHandler = Arc::new(move |args| {
+    let registry = registry.clone();
+    Box::pin(async move {
+      let a: CompressArgs =
+        serde_json::from_value(args).map_err(|e| McpError::InvalidArgs(e.to_string()))?;
+      let mut cfg = match a.preset.as_deref().unwrap_or("voice") {
+        "voice" => CompressorConfig::voice(),
+        "gentle" => CompressorConfig::gentle(),
+        "limiter" => CompressorConfig::limiter(),
+        "default" => CompressorConfig::default(),
+        other => {
+          return Err(McpError::InvalidArgs(format!(
+            "unknown compressor preset '{other}' (expected 'voice', 'gentle', 'limiter', or 'default')"
+          )));
+        }
+      };
+      if let Some(t) = a.threshold_db {
+        if !t.is_finite() || !(-60.0..=0.0).contains(&t) {
+          return Err(McpError::InvalidArgs(
+            "threshold_db must be within [-60, 0]".to_string(),
+          ));
+        }
+        cfg.threshold_db = t;
+      }
+      if let Some(ratio) = a.ratio {
+        if !ratio.is_finite() || !(1.0..=50.0).contains(&ratio) {
+          return Err(McpError::InvalidArgs(
+            "ratio must be within [1, 50]".to_string(),
+          ));
+        }
+        cfg.ratio = ratio;
+      }
+      if let Some(att) = a.attack_secs {
+        if !att.is_finite() || !(0.0001..=1.0).contains(&att) {
+          return Err(McpError::InvalidArgs(
+            "attack_secs must be within [0.0001, 1.0]".to_string(),
+          ));
+        }
+        cfg.attack_secs = att;
+      }
+      if let Some(rel) = a.release_secs {
+        if !rel.is_finite() || !(0.005..=5.0).contains(&rel) {
+          return Err(McpError::InvalidArgs(
+            "release_secs must be within [0.005, 5.0]".to_string(),
+          ));
+        }
+        cfg.release_secs = rel;
+      }
+      if let Some(gain) = a.makeup_gain_db {
+        if !gain.is_finite() || !(-24.0..=36.0).contains(&gain) {
+          return Err(McpError::InvalidArgs(
+            "makeup_gain_db must be within [-24, 36]".to_string(),
+          ));
+        }
+        cfg.makeup_gain_db = gain;
+      }
+
+      let src = registry.get(&a.handle)?;
+      let processed = tokio::task::spawn_blocking(move || {
+        let mut out = phonon_core::AudioBuffer::clone(&src);
+        compress(&mut out, &cfg);
+        out
+      })
+      .await
+      .map_err(|e| McpError::Io(format!("compress task failed: {e}")))?;
+      store(&registry, processed)
+    })
+  });
+
+  r.register(Tool {
+    name: "audio_compress".into(),
+    description:
+      "Apply channel-linked dynamic range compression using a preset (voice/gentle/limiter/default) with optional parameter overrides."
+        .into(),
+    input_schema: json!({
+      "type": "object",
+      "properties": {
+        "handle": { "type": "string", "description": "UUID handle of an audio buffer" },
+        "preset": {
+          "type": "string",
+          "enum": ["voice", "gentle", "limiter", "default"],
+          "description": "Compressor preset (default: voice)"
+        },
+        "threshold_db": { "type": "number", "minimum": -60.0, "maximum": 0.0 },
+        "ratio": { "type": "number", "minimum": 1.0, "maximum": 50.0 },
+        "attack_secs": { "type": "number", "minimum": 0.0001, "maximum": 1.0 },
+        "release_secs": { "type": "number", "minimum": 0.005, "maximum": 5.0 },
+        "makeup_gain_db": { "type": "number", "minimum": -24.0, "maximum": 36.0 }
+      },
+      "required": ["handle"]
+    }),
+    handler,
+  });
 }
 
 fn register_audio_splice(r: &mut ToolRegistry) {
@@ -852,5 +1106,32 @@ mod tests {
       .expect("splice");
     let dur = spl["duration_secs"].as_f64().expect("dur");
     assert!((dur - 0.98).abs() < 0.02, "got {dur}");
+
+    let eq_res = r
+      .call(
+        "audio_eq",
+        json!({
+          "handle": h,
+          "preset": "voice",
+          "bands": [{ "filter_type": "peaking", "freq_hz": 2500.0, "q": 1.2, "gain_db": 2.0 }]
+        }),
+      )
+      .await
+      .expect("eq");
+    assert_eq!(eq_res["bands_applied"], 4);
+
+    let comp_res = r
+      .call(
+        "audio_compress",
+        json!({ "handle": h, "preset": "gentle", "ratio": 3.0 }),
+      )
+      .await
+      .expect("compress");
+    assert!(comp_res["handle"].is_string());
+
+    let bad_ratio = r
+      .call("audio_compress", json!({ "handle": h, "ratio": 0.5 }))
+      .await;
+    assert!(matches!(bad_ratio, Err(McpError::InvalidArgs(_))));
   }
 }

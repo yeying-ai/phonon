@@ -16,9 +16,12 @@ use tracing::{info, instrument, warn};
 pub mod aac;
 pub mod flac;
 pub mod flac_tags;
+#[cfg(feature = "mp3")]
 pub mod mp3;
 pub mod mp3_tags;
+#[cfg(feature = "ogg")]
 pub mod ogg;
+#[cfg(feature = "ogg")]
 pub mod ogg_tags;
 pub mod tags;
 
@@ -26,9 +29,14 @@ pub mod tags;
 pub use aac::{AacConfig, write_aac};
 pub use flac::{FlacConfig, write_flac};
 pub use flac_tags::write_flac_tagged;
+#[cfg(feature = "mp3")]
 pub use mp3::{Mp3Config, write_mp3};
-pub use mp3_tags::{attach_tag, write_mp3_tagged};
+pub use mp3_tags::attach_tag;
+#[cfg(feature = "mp3")]
+pub use mp3_tags::write_mp3_tagged;
+#[cfg(feature = "ogg")]
 pub use ogg::{OggConfig, write_ogg};
+#[cfg(feature = "ogg")]
 pub use ogg_tags::write_ogg_tagged;
 pub use tags::{AudioChapter, CoverArt, CoverMime, PodcastTags};
 
@@ -278,14 +286,28 @@ pub fn write_audio<P: AsRef<Path>>(path: P, buffer: &AudioBuffer) -> Result<()> 
     "wav" => {
       phonon_wav::write_wav(path, buffer)?;
     }
+    #[cfg(feature = "mp3")]
     "mp3" => {
       mp3::write_mp3(path, buffer, &Mp3Config::default())?;
+    }
+    #[cfg(not(feature = "mp3"))]
+    "mp3" => {
+      return Err(PhononError::Wav(
+        "MP3 encoding requires phonon-io's `mp3` feature (mp3lame-encoder, LGPL-3.0)".to_string(),
+      ));
     }
     "flac" => {
       flac::write_flac(path, buffer, &FlacConfig::default())?;
     }
+    #[cfg(feature = "ogg")]
     "ogg" | "oga" => {
       ogg::write_ogg(path, buffer, &OggConfig::default())?;
+    }
+    #[cfg(not(feature = "ogg"))]
+    "ogg" | "oga" => {
+      return Err(PhononError::Wav(
+        "OGG Vorbis encoding requires phonon-io's `ogg` feature (vorbis_rs)".to_string(),
+      ));
     }
     #[cfg(feature = "aac")]
     "aac" => {
@@ -312,6 +334,7 @@ pub fn write_audio<P: AsRef<Path>>(path: P, buffer: &AudioBuffer) -> Result<()> 
 /// Writes an AudioBuffer to an MP3 file with custom configuration.
 ///
 /// Use this when you need control over bitrate or other encoding options.
+#[cfg(feature = "mp3")]
 #[instrument(skip(buffer, path, config), fields(path = %path.as_ref().display(), bitrate = config.bitrate_kbps))]
 pub fn write_mp3_with_config<P: AsRef<Path>>(
   path: P,
@@ -333,6 +356,23 @@ mod tests {
     assert!(matches!(err, Err(PhononError::Wav(msg)) if msg.contains("`aac` feature")));
   }
 
+  #[cfg(not(feature = "mp3"))]
+  #[test]
+  fn test_write_mp3_without_feature_errors() {
+    let path = std::env::temp_dir().join("phonon_io_no_mp3_feature.mp3");
+    let err = write_audio(&path, &AudioBuffer::new(44_100, 1, 0));
+    assert!(matches!(err, Err(PhononError::Wav(msg)) if msg.contains("`mp3` feature")));
+  }
+
+  #[cfg(not(feature = "ogg"))]
+  #[test]
+  fn test_write_ogg_without_feature_errors() {
+    let path = std::env::temp_dir().join("phonon_io_no_ogg_feature.ogg");
+    let err = write_audio(&path, &AudioBuffer::new(44_100, 1, 0));
+    assert!(matches!(err, Err(PhononError::Wav(msg)) if msg.contains("`ogg` feature")));
+  }
+
+  #[cfg(feature = "mp3")]
   #[test]
   fn test_read_skips_corrupt_packets() -> Result<()> {
     let buffer = AudioBuffer {
@@ -375,7 +415,13 @@ mod tests {
       sample_rate: 16_000,
       channels: 2,
     };
-    for ext in ["wav", "mp3", "flac", "ogg"] {
+    #[allow(unused_mut)]
+    let mut exts = vec!["wav", "flac"];
+    #[cfg(feature = "mp3")]
+    exts.push("mp3");
+    #[cfg(feature = "ogg")]
+    exts.push("ogg");
+    for ext in exts {
       let path = std::env::temp_dir().join(format!("phonon_io_decode_bytes.{ext}"));
       write_audio(&path, &buffer)?;
       let from_file = read_audio(&path)?;

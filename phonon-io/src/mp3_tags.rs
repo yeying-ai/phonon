@@ -5,12 +5,16 @@
 //! genre, comment, language, track, cover art) and CHAP/CTOC chapter
 //! frames so podcast players can jump between sections.
 
+#[cfg(feature = "mp3")]
 use crate::mp3::{Mp3Config, write_mp3};
 use crate::tags::{AudioChapter, PodcastTags};
 use id3::frame::{Chapter as Id3Chapter, Content, Picture, PictureType, TableOfContents};
 use id3::{Frame, Tag, TagLike, Version};
-use phonon_core::{AudioBuffer, PhononError, Result};
+#[cfg(feature = "mp3")]
+use phonon_core::AudioBuffer;
+use phonon_core::{PhononError, Result};
 use std::path::Path;
+#[cfg(feature = "mp3")]
 use tracing::{info, instrument};
 
 /// Encode an MP3 with embedded ID3v2 metadata and chapter markers.
@@ -19,6 +23,7 @@ use tracing::{info, instrument};
 /// file. Chapters are written as `CHAP` frames plus a top-level `CTOC`
 /// table-of-contents frame, matching the convention used by Apple Podcasts,
 /// Pocket Casts, and other PodcastIndex consumers.
+#[cfg(feature = "mp3")]
 #[instrument(
   skip(buffer, path, mp3_cfg, tags, chapters),
   fields(
@@ -143,8 +148,10 @@ fn secs_to_ms(secs: f64) -> u32 {
 #[cfg(test)]
 mod tests {
   use super::*;
+  #[cfg(feature = "mp3")]
   use crate::tags::{CoverArt, CoverMime};
 
+  #[cfg(feature = "mp3")]
   fn make_buffer() -> AudioBuffer {
     let sr = 44100_u32;
     let n = sr as usize; // 1 s
@@ -161,6 +168,7 @@ mod tests {
     }
   }
 
+  #[cfg(feature = "mp3")]
   #[test]
   fn test_write_mp3_tagged_basic_fields() -> Result<()> {
     let buf = make_buffer();
@@ -193,6 +201,7 @@ mod tests {
     Ok(())
   }
 
+  #[cfg(feature = "mp3")]
   #[test]
   fn test_write_mp3_tagged_with_cover() -> Result<()> {
     let buf = make_buffer();
@@ -222,6 +231,7 @@ mod tests {
     Ok(())
   }
 
+  #[cfg(feature = "mp3")]
   #[test]
   fn test_write_mp3_tagged_with_chapters() -> Result<()> {
     let buf = make_buffer();
@@ -266,6 +276,7 @@ mod tests {
     Ok(())
   }
 
+  #[cfg(feature = "mp3")]
   #[test]
   fn test_attach_tag_replaces_existing() -> Result<()> {
     let buf = make_buffer();

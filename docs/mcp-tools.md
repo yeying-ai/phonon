@@ -1,6 +1,6 @@
 # Phonon MCP Tool Reference
 
-Complete reference for the 14 tools exposed by `phonon-mcp`. For
+Complete reference for the 23 tools exposed by `phonon-mcp`. For
 install + client configuration, see
 [`phonon-mcp/README.md`](../phonon-mcp/README.md).
 
@@ -17,7 +17,7 @@ Methods supported by the server:
 | `initialize` | Handshake. Returns `protocolVersion`, `serverInfo`, and `capabilities.tools = {}`. |
 | `notifications/initialized` | No-op acknowledgement (no response). |
 | `ping` | Keep-alive — returns `{}`. |
-| `tools/list` | Returns the 14 tools with their JSON Schemas. |
+| `tools/list` | Returns the 23 tools with their JSON Schemas. |
 | `tools/call` | Invokes a tool. Params: `{ name, arguments }`. |
 
 Anything else returns `error.code = -32601` (Method not found).
@@ -55,9 +55,11 @@ Tool handlers return one of:
 | `ToolNotFound(name)` | `tools/call` with an unknown tool name. |
 | `Serde(msg)` | JSON deserialization failure inside a handler. |
 
-Errors are surfaced through the JSON-RPC envelope as
-`error.code = -32000` (server error) with a human-readable
-`error.message`.
+Tool execution errors are surfaced in the MCP `tools/call` result payload with
+`result.isError = true` and a human-readable message in `result.content[0].text`.
+Protocol-level errors (malformed JSON, unknown method, missing `tools/call`
+`name`) return standard JSON-RPC error codes (`-32700`, `-32600`, `-32601`,
+`-32602`).
 
 ---
 
@@ -241,6 +243,30 @@ Non-destructively keep only the specified `[start_secs, end_secs]` time ranges a
 | `handle` | UUID | yes | |
 | `keep_ranges` | array of `[start, end]` pairs | yes | |
 | `crossfade_secs` | number `>= 0` | no | `0.015` |
+
+### `audio_eq`
+
+Apply a multi-band parametric equalizer preset (`"voice"`, `"bass_heavy"`, `"bright"`, `"flat"`) and/or up to 32 custom biquad bands.
+
+| Field | Type | Required | Default |
+|---|---|---|---|
+| `handle` | UUID | yes | |
+| `preset` | `"voice"` \| `"bass_heavy"` \| `"bright"` \| `"flat"` | no | `"flat"` |
+| `bands` | array of `{ filter_type, freq_hz, q?, gain_db? }` | no | `[]` |
+
+### `audio_compress`
+
+Apply channel-linked dynamic range compression using a preset (`"voice"`, `"gentle"`, `"limiter"`, `"default"`) with optional parameter overrides.
+
+| Field | Type | Required | Default |
+|---|---|---|---|
+| `handle` | UUID | yes | |
+| `preset` | `"voice"` \| `"gentle"` \| `"limiter"` \| `"default"` | no | `"voice"` |
+| `threshold_db` | number `-60..0` | no | preset default |
+| `ratio` | number `1..50` | no | preset default |
+| `attack_secs` | number `0.0001..1.0` | no | preset default |
+| `release_secs` | number `0.005..5.0` | no | preset default |
+| `makeup_gain_db` | number `-24..36` | no | preset default |
 
 ---
 

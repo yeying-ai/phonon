@@ -16,14 +16,21 @@ phonon-wav.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 symphonia.workspace = true
-mp3lame-encoder.workspace = true
+mp3lame-encoder = { workspace = true, optional = true }
 flacenc.workspace = true
-vorbis_rs.workspace = true
+vorbis_rs = { workspace = true, optional = true }
 fdk-aac = { workspace = true, optional = true }
 id3.workspace = true
 metaflac.workspace = true
 
 [features]
+# Default enables MP3 (LAME, LGPL-3.0 static link) and OGG Vorbis (libvorbis)
+# encoders alongside pure-Rust WAV/FLAC encoding and Symphonia decoding.
+# Downstream crates requiring a pure-Rust MIT/Apache-2.0 dependency tree can
+# depend on `phonon-io` with `default-features = false`.
+default = ["mp3", "ogg"]
+mp3 = ["dep:mp3lame-encoder"]
+ogg = ["dep:vorbis_rs"]
 # AAC encoding via fdk-aac. Off by default: the bundled libfdk-aac is under
 # the Fraunhofer FDK license (not OSI-approved, with patent caveats), so
 # downstream crates must opt in explicitly. Decoding AAC (Symphonia) is
