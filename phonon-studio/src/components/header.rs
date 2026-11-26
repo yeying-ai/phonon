@@ -9,6 +9,11 @@ use crate::studio_ops::{
   recording_output_path, save_recorded_wav_atomic, write_project_atomic_file,
 };
 use dioxus::prelude::*;
+use dioxus_shadcn::{
+  Badge, BadgeSize, BadgeStyle, BadgeVariant, Button, ButtonSize, ButtonVariant, Separator,
+  SeparatorOrientation, Tabs, TabsList, TabsTrigger, Tooltip, TooltipContent, TooltipSide,
+  TooltipTrigger, button_class, use_density,
+};
 use phonon_engine::PlaybackState;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,7 +21,12 @@ use std::sync::Arc;
 #[component]
 pub fn Header() -> Element {
   let mut state = use_context::<AppState>();
+  let density = use_density();
   let active_tab = (state.active_tab)();
+  let active_tab_key = match active_tab {
+    WorkspaceTab::PodcastStudio => "podcast",
+    WorkspaceTab::AudioLab => "audiolab",
+  };
   let can_undo = state.history.read().can_undo();
   let can_redo = state.history.read().can_redo();
   let show_ai_draft = (state.show_ai_draft)();
@@ -47,38 +57,58 @@ pub fn Header() -> Element {
     }
   };
 
+  let mcp_trigger_class = if show_mcp_panel {
+    button_class(
+      ButtonVariant::Primary,
+      ButtonSize::Xs,
+      density,
+      "gap-1.5 bg-info text-info-foreground hover:bg-info/90",
+    )
+  } else {
+    button_class(
+      ButtonVariant::Outline,
+      ButtonSize::Xs,
+      density,
+      "gap-1.5 bg-secondary text-foreground hover:border-info",
+    )
+  };
+
+  let undo_trigger_class = button_class(ButtonVariant::Secondary, ButtonSize::Xs, density, "px-2");
+
   rsx! {
     header {
-      class: "h-12 shrink-0 bg-[#1C1F24] px-4 flex items-center justify-between border-b border-[#2D333C] select-none",
+      class: "h-12 shrink-0 bg-card px-4 flex items-center justify-between border-b border-border select-none",
 
-      // Left: Brand + Workspace segmented switcher
+      // Left: Brand + Workspace segmented switcher (dioxus-shadcn Tabs)
       div {
         class: "flex items-center gap-4",
         div {
-          class: "flex items-center gap-2 font-semibold text-sm tracking-tight text-[#ECEFF4]",
-          span { class: "inline-block w-2 h-2 rounded-full bg-[#E8A238]" }
+          class: "flex items-center gap-2 font-semibold text-sm tracking-tight text-foreground",
+          span { class: "inline-block w-2 h-2 rounded-full bg-primary" }
           "Phonon Studio"
         }
 
-        div {
-          class: "flex items-center bg-[#141619] p-0.5 rounded-md border border-[#2D333C]",
-          button {
-            class: if active_tab == WorkspaceTab::PodcastStudio {
-              "px-3 py-1 rounded text-xs font-medium bg-[#252A31] text-[#ECEFF4] shadow-xs"
-            } else {
-              "px-3 py-1 rounded text-xs font-medium text-[#9AA4B2] hover:text-[#ECEFF4]"
-            },
-            onclick: move |_| state.active_tab.set(WorkspaceTab::PodcastStudio),
-            "Podcast Studio"
-          }
-          button {
-            class: if active_tab == WorkspaceTab::AudioLab {
-              "px-3 py-1 rounded text-xs font-medium bg-[#252A31] text-[#ECEFF4] shadow-xs"
-            } else {
-              "px-3 py-1 rounded text-xs font-medium text-[#9AA4B2] hover:text-[#ECEFF4]"
-            },
-            onclick: move |_| state.active_tab.set(WorkspaceTab::AudioLab),
-            "Audio Lab"
+        Tabs {
+          value: active_tab_key.to_string(),
+          on_value_change: move |next: String| {
+            match next.as_str() {
+              "audiolab" => state.active_tab.set(WorkspaceTab::AudioLab),
+              _ => state.active_tab.set(WorkspaceTab::PodcastStudio),
+            }
+          },
+          TabsList {
+            class: "h-8 p-0.5 bg-background border border-border",
+            "aria-label": "Studio workspaces",
+            TabsTrigger {
+              value: "podcast",
+              class: "h-7 px-3 py-1 text-xs",
+              "Podcast Studio"
+            }
+            TabsTrigger {
+              value: "audiolab",
+              class: "h-7 px-3 py-1 text-xs",
+              "Audio Lab"
+            }
           }
         }
       }
@@ -89,79 +119,96 @@ pub fn Header() -> Element {
           class: "flex items-center gap-2",
 
           // Provider readiness pill
-          div {
-            class: "hidden md:flex items-center gap-1.5 px-2.5 py-1 rounded bg-[#141619] border border-[#2D333C] text-xs text-[#9AA4B2]",
+          Badge {
+            variant: if provider_ready { BadgeVariant::Success } else { BadgeVariant::Destructive },
+            style: BadgeStyle::Soft,
+            size: BadgeSize::Sm,
+            class: "hidden md:inline-flex items-center gap-1.5 font-normal",
             span {
               class: if provider_ready {
-                "inline-block w-1.5 h-1.5 rounded-full bg-[#38B2AC]"
+                "inline-block w-1.5 h-1.5 rounded-full bg-success"
               } else {
-                "inline-block w-1.5 h-1.5 rounded-full bg-[#E05252]"
+                "inline-block w-1.5 h-1.5 rounded-full bg-destructive"
               }
             }
             span { class: "font-mono tabular-nums", "TTS: {provider_label}" }
           }
 
-          button {
-            class: if show_ai_draft {
-              "px-2.5 py-1.5 rounded text-xs font-medium bg-[#E8A238] text-[#141619] hover:opacity-90 transition"
-            } else {
-              "px-2.5 py-1.5 rounded text-xs font-medium bg-[#252A31] text-[#ECEFF4] border border-[#2D333C] hover:border-[#E8A238] transition"
-            },
+          Button {
+            variant: if show_ai_draft { ButtonVariant::Primary } else { ButtonVariant::Outline },
+            size: ButtonSize::Xs,
+            class: if show_ai_draft { String::new() } else { "bg-secondary hover:border-primary".to_string() },
             onclick: move |_| state.show_ai_draft.set(!show_ai_draft),
             "AI Draft"
           }
 
-          button {
-            class: if show_mcp_panel {
-              "px-2.5 py-1.5 rounded text-xs font-medium bg-[#38B2AC] text-[#141619] flex items-center gap-1.5 transition"
-            } else {
-              "px-2.5 py-1.5 rounded text-xs font-medium bg-[#252A31] text-[#ECEFF4] border border-[#2D333C] hover:border-[#38B2AC] flex items-center gap-1.5 transition"
-            },
-            title: "Configure MCP Agent live co-editing",
-            onclick: move |_| state.show_mcp_panel.set(!show_mcp_panel),
-            span {
-              class: if mcp_synced {
-                "inline-block w-1.5 h-1.5 rounded-full bg-[#38B2AC]"
-              } else {
-                "inline-block w-1.5 h-1.5 rounded-full bg-[#647080]"
+          Tooltip {
+            delay_ms: 400,
+            TooltipTrigger {
+              class: mcp_trigger_class,
+              onclick: move |_| state.show_mcp_panel.set(!show_mcp_panel),
+              span {
+                class: if mcp_synced {
+                  "inline-block w-1.5 h-1.5 rounded-full bg-success"
+                } else {
+                  "inline-block w-1.5 h-1.5 rounded-full bg-muted-foreground"
+                }
               }
+              "MCP Sync"
             }
-            "MCP Sync"
+            TooltipContent {
+              side: TooltipSide::Bottom,
+              "Configure MCP Agent live co-editing"
+            }
           }
 
-          div { class: "h-4 w-px bg-[#2D333C] mx-0.5" }
-
-          button {
-            class: if can_undo {
-              "px-2 py-1.5 rounded text-xs bg-[#252A31] text-[#ECEFF4] hover:bg-[#2D333C]"
-            } else {
-              "px-2 py-1.5 rounded text-xs bg-[#1C1F24] text-[#647080] cursor-not-allowed"
-            },
-            disabled: !can_undo,
-            title: "Undo last edit",
-            onclick: move |_| {
-              state.undo_project();
-            },
-            "Undo"
-          }
-          button {
-            class: if can_redo {
-              "px-2 py-1.5 rounded text-xs bg-[#252A31] text-[#ECEFF4] hover:bg-[#2D333C]"
-            } else {
-              "px-2 py-1.5 rounded text-xs bg-[#1C1F24] text-[#647080] cursor-not-allowed"
-            },
-            disabled: !can_redo,
-            title: "Redo edit",
-            onclick: move |_| {
-              state.redo_project();
-            },
-            "Redo"
+          Separator {
+            orientation: SeparatorOrientation::Vertical,
+            decorative: true,
+            class: "h-4 mx-0.5",
           }
 
-          div { class: "h-4 w-px bg-[#2D333C] mx-0.5" }
+          Tooltip {
+            delay_ms: 400,
+            TooltipTrigger {
+              class: undo_trigger_class.clone(),
+              disabled: !can_undo,
+              onclick: move |_| {
+                state.undo_project();
+              },
+              "Undo"
+            }
+            TooltipContent {
+              side: TooltipSide::Bottom,
+              "Undo last project edit"
+            }
+          }
 
-          button {
-            class: "px-2.5 py-1.5 rounded text-xs font-medium bg-[#252A31] text-[#ECEFF4] hover:bg-[#2D333C]",
+          Tooltip {
+            delay_ms: 400,
+            TooltipTrigger {
+              class: undo_trigger_class,
+              disabled: !can_redo,
+              onclick: move |_| {
+                state.redo_project();
+              },
+              "Redo"
+            }
+            TooltipContent {
+              side: TooltipSide::Bottom,
+              "Redo project edit"
+            }
+          }
+
+          Separator {
+            orientation: SeparatorOrientation::Vertical,
+            decorative: true,
+            class: "h-4 mx-0.5",
+          }
+
+          Button {
+            variant: ButtonVariant::Secondary,
+            size: ButtonSize::Xs,
             onclick: move |_| {
               state.mutate_project(|p| *p = StudioProject::starter());
               state.project_path.set(None);
@@ -172,15 +219,17 @@ pub fn Header() -> Element {
             },
             "New"
           }
-          button {
-            class: "px-2.5 py-1.5 rounded text-xs font-medium bg-[#252A31] text-[#ECEFF4] hover:bg-[#2D333C]",
+          Button {
+            variant: ButtonVariant::Secondary,
+            size: ButtonSize::Xs,
             onclick: move |_| async move {
               open_podcast_project(&mut state).await;
             },
             "Open Script"
           }
-          button {
-            class: "px-2.5 py-1.5 rounded text-xs font-medium bg-[#252A31] text-[#ECEFF4] hover:bg-[#2D333C]",
+          Button {
+            variant: ButtonVariant::Secondary,
+            size: ButtonSize::Xs,
             onclick: move |_| async move {
               save_podcast_project(&mut state).await;
             },
@@ -194,6 +243,12 @@ pub fn Header() -> Element {
           let rec_secs = (state.recording_secs)();
           let vu_pct = (rec_peak.clamp(0.0, 1.0) * 100.0).round() as u32;
           let rec_tc = format_timecode(rec_secs);
+          let rec_trigger_class = button_class(
+            ButtonVariant::Outline,
+            ButtonSize::Xs,
+            density,
+            "bg-secondary text-destructive hover:border-destructive",
+          );
           rsx! {
             div {
               class: "flex items-center gap-2",
@@ -202,22 +257,28 @@ pub fn Header() -> Element {
               SideToggle { label: "Plugins", panel: SidePanel::Plugins }
               SideToggle { label: "Export", panel: SidePanel::Export }
 
-              div { class: "h-4 w-px bg-[#2D333C] mx-0.5" }
+              Separator {
+                orientation: SeparatorOrientation::Vertical,
+                decorative: true,
+                class: "h-4 mx-0.5",
+              }
 
               if rec_target == Some(RecordingTarget::AudioLab) {
                 div {
-                  class: "flex items-center gap-2 px-2 py-1 rounded bg-[#E05252]/15 border border-[#E05252]/60 text-xs text-[#E05252]",
-                  span { class: "inline-block w-2 h-2 rounded-full bg-[#E05252] animate-pulse" }
+                  class: "flex items-center gap-2 px-2 py-0.5 rounded-md bg-destructive/15 border border-destructive/60 text-xs text-destructive",
+                  span { class: "inline-block w-2 h-2 rounded-full bg-destructive animate-pulse" }
                   span { class: "font-mono tabular-nums", "{rec_tc}" }
                   div {
-                    class: "w-14 h-1.5 rounded bg-[#141619] overflow-hidden",
+                    class: "w-14 h-1.5 rounded bg-background overflow-hidden",
                     div {
-                      class: "h-full bg-[#E05252] transition-all duration-75",
+                      class: "h-full bg-destructive transition-all duration-75",
                       style: "width: {vu_pct}%;",
                     }
                   }
-                  button {
-                    class: "px-2 py-0.5 rounded bg-[#E05252] text-[#141619] font-semibold hover:opacity-90",
+                  Button {
+                    variant: ButtonVariant::Destructive,
+                    size: ButtonSize::Xs,
+                    class: "h-6 px-2 text-xs font-semibold",
                     onclick: move |_| async move {
                       stop_audiolab_recording(&mut state).await;
                     },
@@ -225,21 +286,28 @@ pub fn Header() -> Element {
                   }
                 }
               } else {
-                button {
-                  class: "px-2.5 py-1.5 rounded text-xs font-medium bg-[#252A31] border border-[#2D333C] text-[#E05252] hover:border-[#E05252] disabled:opacity-40 transition",
-                  disabled: rec_target.is_some(),
-                  title: "Record directly from your default microphone into Audio Lab",
-                  onclick: move |_| {
-                    if let Err(e) = start_mic_recording(&mut state, RecordingTarget::AudioLab) {
-                      state.status_msg.set(e);
-                    }
-                  },
-                  "● Record"
+                Tooltip {
+                  delay_ms: 400,
+                  TooltipTrigger {
+                    class: rec_trigger_class,
+                    disabled: rec_target.is_some(),
+                    onclick: move |_| {
+                      if let Err(e) = start_mic_recording(&mut state, RecordingTarget::AudioLab) {
+                        state.status_msg.set(e);
+                      }
+                    },
+                    "● Record"
+                  }
+                  TooltipContent {
+                    side: TooltipSide::Bottom,
+                    "Record directly from your default microphone into Audio Lab"
+                  }
                 }
               }
 
-              button {
-                class: "px-3 py-1.5 rounded text-xs font-medium bg-[#E8A238] text-[#141619] hover:opacity-90 transition",
+              Button {
+                variant: ButtonVariant::Primary,
+                size: ButtonSize::Xs,
                 onclick: move |_| async move {
                   open_audio_file(&mut state).await;
                 },
@@ -258,11 +326,13 @@ fn SideToggle(label: &'static str, panel: SidePanel) -> Element {
   let mut state = use_context::<AppState>();
   let active = (state.side_panel)() == panel;
   rsx! {
-    button {
+    Button {
+      variant: if active { ButtonVariant::Primary } else { ButtonVariant::Secondary },
+      size: ButtonSize::Xs,
       class: if active {
-        "px-2.5 py-1.5 rounded text-xs font-medium bg-[#38B2AC] text-[#141619]"
+        "bg-info text-info-foreground hover:bg-info/90".to_string()
       } else {
-        "px-2.5 py-1.5 rounded text-xs font-medium bg-[#252A31] text-[#ECEFF4] hover:bg-[#2D333C]"
+        String::new()
       },
       onclick: move |_| {
         let next = if (state.side_panel)() == panel {
