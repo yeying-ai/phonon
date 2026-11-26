@@ -11,7 +11,8 @@ use crate::state::{AppState, RecordingTarget, start_mic_recording};
 use dioxus::prelude::*;
 use dioxus_shadcn::{
   Badge, BadgeSize, BadgeStyle, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, Input,
-  InputSize, InputVariant, NativeSelect, NativeSelectOption, Textarea, TextareaSize,
+  InputSize, InputVariant, NativeSelect, NativeSelectOption, NativeSelectSize, Textarea,
+  TextareaSize,
 };
 
 #[component]
@@ -171,7 +172,8 @@ pub(super) fn CenterScriptDesk() -> Element {
                     span { class: "inline-block w-2 h-2 rounded-full {dot}" }
 
                     NativeSelect {
-                      class: "w-auto h-7 px-2 py-0.5 text-xs font-medium bg-secondary",
+                      size: NativeSelectSize::Sm,
+                      class: "w-auto font-medium bg-secondary",
                       value: "{seg.speaker}",
                       on_value_change: move |sp: String| {
                         state.mutate_project(|p| {

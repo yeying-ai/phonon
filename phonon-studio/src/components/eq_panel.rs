@@ -3,7 +3,8 @@
 use crate::state::{AppState, transform_audio};
 use dioxus::prelude::*;
 use dioxus_shadcn::{
-  Button, ButtonSize, ButtonVariant, Label, NativeSelect, NativeSelectOption, Slider,
+  Button, ButtonSize, ButtonVariant, Label, NativeSelect, NativeSelectOption, NativeSelectSize,
+  Slider,
 };
 use phonon_core::{EqBand, FilterType, algorithms};
 
@@ -29,7 +30,8 @@ pub fn EqPanel() -> Element {
         class: "flex flex-col gap-1",
         Label { class: "text-[11px] font-normal text-muted-foreground", "Preset" }
         NativeSelect {
-          class: "h-8 px-2 py-1 text-xs bg-secondary",
+          size: NativeSelectSize::Sm,
+          class: "bg-secondary",
           value: "{preset_val}",
           on_value_change: move |preset: String| {
             let gains = match preset.as_str() {

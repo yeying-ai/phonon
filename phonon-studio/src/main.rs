@@ -57,7 +57,7 @@ fn App() -> Element {
   rsx! {
     document::Stylesheet { href: TAILWIND_CSS }
     DensityProvider {
-      density: UiDensity::Comfortable,
+      density: UiDensity::Compact,
       div {
         class: "dark flex flex-col h-dvh bg-background text-foreground overflow-hidden",
 

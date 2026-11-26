@@ -47,7 +47,7 @@ phonon-studio/src/
 ├── state.rs                # Dioxus Signals wiring StudioProject + Audio Lab + shared AudioPlayer transport
 └── components/
     ├── header.rs           # Top console bar: workspace tabs, project I/O, AI Draft trigger, Undo/Redo, provider badge
-    ├── podcast_studio.rs   # 3-column Broadcast Desk (Left: Providers/Cast/Mastering, Center: Segment Editor, Right: Episode Inspector)
+    ├── podcast_studio/     # 3-pane ResizablePanelGroup Broadcast Desk (mod, left_rail, script_desk, episode_inspector, actions)
     ├── transport.rs        # Shared bottom transport: Play/Pause/Stop, interactive Seek bar, real-time Volume, live timecode
     ├── audio_lab.rs        # Audio Lab tab container (Waveform/Spectrum + Info + Effects/EQ/Plugins/Export drawer)
     ├── waveform.rs         # Waveform SVG + Spectrum toggle
@@ -66,6 +66,7 @@ phonon-studio/src/
 
 ## 4. Visual Design System (Broadcast Mastering Console)
 
+- **Component Library**: Built on published `dioxus-shadcn` (`0.8.0`, Crate Mode with 17 opted-in features + `dxui 0.8.0` Tailwind v4 `@source` wiring) inside a global `DensityProvider(UiDensity::Compact)` and `.dark` theme container.
 - **Palette**:
   - Canvas `#141619` | Primary Surface `#1C1F24` | Elevated Control `#252A31` | Hairline Border `#2D333C`
   - Primary Action / Active Transport Accent: Broadcast Amber `#E8A238`

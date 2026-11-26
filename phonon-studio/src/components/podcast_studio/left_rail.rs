@@ -1,12 +1,14 @@
 #![allow(non_snake_case)]
 
 use super::{AssetPickerRow, SPEAKER_DOTS, pick_audio_path, short_filename};
+use crate::project::StudioProject;
 use crate::state::AppState;
 use crate::studio_ops::preset_voices_for;
 use dioxus::prelude::*;
 use dioxus_shadcn::{
   Badge, BadgeSize, BadgeStyle, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, Input,
-  InputSize, Label, NativeSelect, NativeSelectOption, Separator, Slider, Switch, SwitchSize,
+  InputSize, Label, NativeSelect, NativeSelectOption, NativeSelectSize, Separator, Slider, Switch,
+  SwitchSize,
 };
 use phonon_ai::VoiceConfig;
 
@@ -73,7 +75,8 @@ pub(super) fn LeftConfigRail() -> Element {
           class: "flex flex-col gap-1",
           Label { class: "text-[11px] font-normal text-muted-foreground", "TTS Provider" }
           NativeSelect {
-            class: "h-8 px-2 py-1 text-xs bg-secondary",
+            size: NativeSelectSize::Sm,
+            class: "bg-secondary",
             value: "{tts_provider_val}",
             on_value_change: move |val: String| {
               state.mutate_project(|p| {
@@ -137,7 +140,8 @@ pub(super) fn LeftConfigRail() -> Element {
           class: "flex flex-col gap-1",
           Label { class: "text-[11px] font-normal text-muted-foreground", "LLM Provider (AI Draft)" }
           NativeSelect {
-            class: "h-8 px-2 py-1 text-xs bg-secondary",
+            size: NativeSelectSize::Sm,
+            class: "bg-secondary",
             value: "{llm_provider_val}",
             on_value_change: move |val: String| {
               state.mutate_project(|p| {
@@ -242,7 +246,8 @@ pub(super) fn LeftConfigRail() -> Element {
 
                   if !preset_voices.is_empty() {
                     NativeSelect {
-                      class: "h-7 px-2 py-0.5 text-[11px] bg-secondary",
+                      size: NativeSelectSize::Sm,
+                      class: "text-[11px] bg-secondary",
                       value: "{voice_id}",
                       on_value_change: move |v: String| {
                         if !v.is_empty() {
@@ -280,28 +285,9 @@ pub(super) fn LeftConfigRail() -> Element {
                     },
                   }
 
-                  div {
-                    class: "flex items-center gap-2",
-                    span { class: "text-[11px] text-muted-foreground w-11 shrink-0", "Speed" }
-                    Slider {
-                      value: speed,
-                      min: 0.5,
-                      max: 2.0,
-                      step: 0.05,
-                      class: "flex-1",
-                      track_class: "h-1.5",
-                      thumb_class: "h-3.5 w-3.5",
-                      "aria-label": "{name} speaking speed",
-                      on_value_change: move |s: f64| {
-                        if let Some(cfg) = state.project.write().script.speakers.get_mut(&speaker_key_speed) {
-                          cfg.speed = s.clamp(0.25, 4.0);
-                        }
-                      },
-                    }
-                    span {
-                      class: "text-[11px] font-mono tabular-nums text-muted-foreground w-9 text-right",
-                      "{speed:.2}x"
-                    }
+                  SpeakerSpeedSlider {
+                    speaker_name: speaker_key_speed,
+                    speed,
                   }
 
                   Input {
@@ -371,7 +357,8 @@ pub(super) fn LeftConfigRail() -> Element {
           class: "flex flex-col gap-1",
           Label { class: "text-[11px] font-normal text-muted-foreground", "Loudness Standard (BS.1770-4)" }
           NativeSelect {
-            class: "h-8 px-2 py-1 text-xs bg-secondary",
+            size: NativeSelectSize::Sm,
+            class: "bg-secondary",
             value: "{lufs_select_value}",
             on_value_change: move |val: String| {
               let target = match val.as_str() {
@@ -512,6 +499,51 @@ pub(super) fn LeftConfigRail() -> Element {
 }
 
 #[component]
+fn SpeakerSpeedSlider(speaker_name: String, speed: f64) -> Element {
+  let mut state = use_context::<AppState>();
+  let mut pre_drag = use_signal(|| None::<StudioProject>);
+  let key_change = speaker_name.clone();
+  let key_commit = speaker_name.clone();
+
+  rsx! {
+    div {
+      class: "flex items-center gap-2",
+      span { class: "text-[11px] text-muted-foreground w-11 shrink-0", "Speed" }
+      Slider {
+        value: speed,
+        min: 0.5,
+        max: 2.0,
+        step: 0.05,
+        class: "flex-1",
+        track_class: "h-1.5",
+        thumb_class: "h-3.5 w-3.5",
+        "aria-label": "{speaker_name} speaking speed",
+        on_value_change: move |s: f64| {
+          if pre_drag.read().is_none() {
+            pre_drag.set(Some(state.project.read().clone()));
+          }
+          if let Some(cfg) = state.project.write().script.speakers.get_mut(&key_change) {
+            cfg.speed = s.clamp(0.25, 4.0);
+          }
+        },
+        on_value_commit: move |s: f64| {
+          if let Some(cfg) = state.project.write().script.speakers.get_mut(&key_commit) {
+            cfg.speed = s.clamp(0.25, 4.0);
+          }
+          if let Some(before) = pre_drag.write().take() {
+            state.history.write().push_snapshot(&before);
+          }
+        },
+      }
+      span {
+        class: "text-[11px] font-mono tabular-nums text-muted-foreground w-9 text-right",
+        "{speed:.2}x"
+      }
+    }
+  }
+}
+
+#[component]
 fn MasteringSlider(
   label: &'static str,
   min: f64,
@@ -521,6 +553,9 @@ fn MasteringSlider(
   display: String,
   onchange: EventHandler<f64>,
 ) -> Element {
+  let mut state = use_context::<AppState>();
+  let mut pre_drag = use_signal(|| None::<StudioProject>);
+
   rsx! {
     div {
       class: "flex items-center gap-2",
@@ -535,7 +570,18 @@ fn MasteringSlider(
         range_class: "bg-info",
         thumb_class: "h-3.5 w-3.5 border-info",
         "aria-label": label,
-        on_value_change: move |v: f64| onchange.call(v),
+        on_value_change: move |v: f64| {
+          if pre_drag.read().is_none() {
+            pre_drag.set(Some(state.project.read().clone()));
+          }
+          onchange.call(v);
+        },
+        on_value_commit: move |v: f64| {
+          onchange.call(v);
+          if let Some(before) = pre_drag.write().take() {
+            state.history.write().push_snapshot(&before);
+          }
+        },
       }
       span {
         class: "text-[11px] font-mono tabular-nums text-muted-foreground w-10 text-right",

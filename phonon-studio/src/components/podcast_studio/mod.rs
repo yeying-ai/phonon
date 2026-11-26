@@ -14,8 +14,8 @@ use dioxus::prelude::*;
 use dioxus_shadcn::{
   Button, ButtonSize, ButtonVariant, Dialog, DialogClose, DialogContent, DialogDescription,
   DialogOverlay, DialogTitle, Input, InputSize, Label, LayoutOrientation, NativeSelect,
-  NativeSelectOption, ResizableHandle, ResizablePanel, ResizablePanelGroup, ResizablePanelState,
-  SonnerVariant, Switch, SwitchSize, resizable_resize_pair,
+  NativeSelectOption, NativeSelectSize, ResizableHandle, ResizablePanel, ResizablePanelGroup,
+  ResizablePanelState, SonnerVariant, Switch, SwitchSize, resizable_resize_pair,
 };
 use episode_inspector::RightEpisodeInspector;
 use left_rail::LeftConfigRail;
@@ -221,7 +221,8 @@ fn AiDraftDialog() -> Element {
               class: "flex flex-col gap-1",
               Label { class: "text-[11px] font-normal text-muted-foreground", "Language" }
               NativeSelect {
-                class: "h-8 px-2 py-1 text-xs bg-background",
+                size: NativeSelectSize::Sm,
+                class: "bg-background",
                 value: "{lang_val}",
                 on_value_change: move |val: String| draft_lang.set(val),
                 NativeSelectOption { value: "zh-CN", selected: lang_val == "zh-CN", "zh-CN" }

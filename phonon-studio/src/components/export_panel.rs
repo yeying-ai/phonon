@@ -4,7 +4,8 @@ use crate::state::AppState;
 use crate::studio_ops::bake_plugins_into_buffer;
 use dioxus::prelude::*;
 use dioxus_shadcn::{
-  Button, ButtonSize, ButtonVariant, Label, NativeSelect, NativeSelectOption, Switch, SwitchSize,
+  Button, ButtonSize, ButtonVariant, Label, NativeSelect, NativeSelectOption, NativeSelectSize,
+  Switch, SwitchSize,
 };
 
 #[component]
@@ -40,7 +41,8 @@ pub fn ExportPanel() -> Element {
         class: "flex flex-col gap-1",
         Label { class: "text-[11px] font-normal text-muted-foreground", "MP3 Bitrate (kbps)" }
         NativeSelect {
-          class: "h-8 px-2 py-1 text-xs font-mono bg-secondary",
+          size: NativeSelectSize::Sm,
+          class: "font-mono bg-secondary",
           value: "{bitrate}",
           on_value_change: move |val: String| {
             if let Ok(v) = val.parse::<u32>() {

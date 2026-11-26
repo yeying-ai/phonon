@@ -15,7 +15,7 @@ publish = false
 blake3.workspace = true
 dioxus.workspace = true
 dioxus-logger.workspace = true
-dioxus-shadcn = { version = "0.7.0", default-features = false, features = [
+dioxus-shadcn = { version = "0.8.0", default-features = false, features = [
   "badge",
   "button",
   "card",

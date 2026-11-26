@@ -9,7 +9,7 @@ use dioxus::prelude::*;
 use dioxus_shadcn::{
   Badge, BadgeSize, BadgeStyle, BadgeVariant, Button, ButtonSize, ButtonVariant, Card, Empty,
   EmptyDescription, EmptyHeader, EmptyTitle, Input, InputSize, Label, NativeSelect,
-  NativeSelectOption, Separator, Tabs, TabsList, TabsTrigger, TabsVariant,
+  NativeSelectOption, NativeSelectSize, Separator, Tabs, TabsList, TabsTrigger, TabsVariant,
 };
 use std::sync::Arc;
 
@@ -181,7 +181,8 @@ pub(super) fn RightEpisodeInspector() -> Element {
                   class: "flex flex-col gap-1",
                   Label { class: "text-[11px] font-normal text-muted-foreground", "MP3 Bitrate" }
                   NativeSelect {
-                    class: "h-7 px-2 py-0.5 text-xs font-mono bg-secondary",
+                    size: NativeSelectSize::Sm,
+                    class: "font-mono bg-secondary",
                     value: "{bitrate}",
                     on_value_change: move |val: String| {
                       if let Ok(b) = val.parse::<u32>() {
