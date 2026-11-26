@@ -141,7 +141,12 @@ pub(crate) fn compress_frames(
   let ratio = config.ratio.max(1.0); // ratio < 1 would be expansion, clamp to ≥ 1
 
   for frame in samples.chunks_mut(channels) {
-    let input_abs = frame.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    let input_abs = frame.iter().fold(
+      0.0f32,
+      |m, s| {
+        if s.is_finite() { m.max(s.abs()) } else { m }
+      },
+    );
 
     // Envelope follower (peak detector with attack/release)
     let coeff = if input_abs > *envelope {
@@ -167,7 +172,11 @@ pub(crate) fn compress_frames(
 
     let frame_gain = gain * makeup_linear;
     for sample in frame {
-      *sample *= frame_gain;
+      *sample = if sample.is_finite() {
+        *sample * frame_gain
+      } else {
+        0.0
+      };
     }
   }
 }

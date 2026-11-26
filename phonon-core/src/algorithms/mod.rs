@@ -33,7 +33,7 @@ pub use filters::{FilterType, filter};
 pub use generators::{Waveform, generate_beep, generate_signal, generate_tone};
 pub use loudness::{adjust_volume_db, dbfs, peak, peak_dbfs, rms, with_volume_db};
 pub use lufs::{
-  LoudnessReport, loudness_integrated, loudness_momentary_max, loudness_range,
+  LoudnessReport, limit_true_peak, loudness_integrated, loudness_momentary_max, loudness_range,
   loudness_short_term_max, measure_loudness, normalize_lufs, true_peak, true_peak_dbtp,
   with_lufs_normalized,
 };

@@ -52,24 +52,27 @@ pub fn crossfade(
     });
   }
 
-  let samples_per_sec = sample_rate as f64 * channels as f64;
-  let mut fade_len = (crossfade_secs * samples_per_sec) as usize;
+  let ch = (channels as usize).max(1);
+  // Align source slices to complete frames so a trailing partial frame never
+  // swaps channels across the splice boundary.
+  let b1_len = buffer1.samples.len() - buffer1.samples.len() % ch;
+  let b2_len = buffer2.samples.len() - buffer2.samples.len() % ch;
 
-  // Align to frame boundary
-  let ch = channels as usize;
-  if ch > 0 {
-    fade_len -= fade_len % ch;
-  }
+  let samples_per_sec = sample_rate as f64 * ch as f64;
+  let mut fade_len = if crossfade_secs.is_finite() {
+    (crossfade_secs * samples_per_sec) as usize
+  } else {
+    b1_len.min(b2_len)
+  };
 
-  // Clamp to the shorter buffer
-  fade_len = fade_len
-    .min(buffer1.samples.len())
-    .min(buffer2.samples.len());
+  // Clamp to the shorter frame-aligned buffer and re-align to frame boundary.
+  fade_len = fade_len.min(b1_len).min(b2_len);
+  fade_len -= fade_len % ch;
 
   if fade_len == 0 {
-    let mut samples = Vec::with_capacity(buffer1.samples.len() + buffer2.samples.len());
-    samples.extend_from_slice(&buffer1.samples);
-    samples.extend_from_slice(&buffer2.samples);
+    let mut samples = Vec::with_capacity(b1_len + b2_len);
+    samples.extend_from_slice(&buffer1.samples[..b1_len]);
+    samples.extend_from_slice(&buffer2.samples[..b2_len]);
     return Ok(AudioBuffer {
       samples,
       sample_rate,
@@ -77,8 +80,6 @@ pub fn crossfade(
     });
   }
 
-  let b1_len = buffer1.samples.len();
-  let b2_len = buffer2.samples.len();
   let total_len = b1_len + b2_len - fade_len;
 
   let mut samples = Vec::with_capacity(total_len);
@@ -130,7 +131,7 @@ pub fn crossfade(
   samples.extend_from_slice(&overlap);
 
   // Part 3: Non-overlapping tail of buffer2
-  samples.extend_from_slice(&buffer2.samples[fade_len..]);
+  samples.extend_from_slice(&buffer2.samples[fade_len..b2_len]);
 
   Ok(AudioBuffer {
     samples,

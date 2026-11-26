@@ -13,40 +13,55 @@ const PAR_THRESHOLD: usize = 131072;
 /// * `buffer` - The audio buffer to modify in place.
 /// * `duration_secs` - The duration of the fade-in in seconds.
 pub fn fade_in(buffer: &mut AudioBuffer, duration_secs: f64) {
-  if duration_secs <= 0.0 {
+  let ch = buffer.channels as usize;
+  if !duration_secs.is_finite() || duration_secs <= 0.0 || ch == 0 || buffer.sample_rate == 0 {
     return;
   }
 
-  let samples_per_sec = buffer.sample_rate as f64 * buffer.channels as f64;
-  let fade_len = (duration_secs * samples_per_sec) as usize;
-  let fade_len = fade_len.min(buffer.samples.len());
+  let total_frames = buffer.samples.len() / ch;
+  let fade_frames = ((duration_secs * buffer.sample_rate as f64) as usize).min(total_frames);
+  if fade_frames == 0 {
+    return;
+  }
+  let fade_len = fade_frames * ch;
 
-  if fade_len == 0 {
+  let inv_frames = 1.0 / fade_frames as f32;
+  if ch == 1 {
+    #[cfg(feature = "parallel")]
+    if fade_len >= PAR_THRESHOLD {
+      buffer.samples[..fade_len]
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, s)| *s *= i as f32 * inv_frames);
+      return;
+    }
+    #[cfg(feature = "simd")]
+    super::simd_ops::simd_mul_ramp(&mut buffer.samples[..fade_len], 0.0, inv_frames);
+    #[cfg(not(feature = "simd"))]
+    for (i, s) in buffer.samples[..fade_len].iter_mut().enumerate() {
+      *s *= i as f32 * inv_frames;
+    }
     return;
   }
 
-  let inv_fade = 1.0 / fade_len as f32;
+  // Multi-channel: apply the exact same gain to every channel in a frame.
   #[cfg(feature = "parallel")]
   if fade_len >= PAR_THRESHOLD {
     buffer.samples[..fade_len]
-      .par_iter_mut()
+      .par_chunks_mut(ch)
       .enumerate()
-      .for_each(|(i, s)| *s *= i as f32 * inv_fade);
-  } else {
-    #[cfg(feature = "simd")]
-    super::simd_ops::simd_mul_ramp(&mut buffer.samples[..fade_len], 0.0, inv_fade);
-    #[cfg(not(feature = "simd"))]
-    for i in 0..fade_len {
-      buffer.samples[i] *= i as f32 * inv_fade;
-    }
+      .for_each(|(frame_idx, frame)| {
+        let gain = frame_idx as f32 * inv_frames;
+        for s in frame {
+          *s *= gain;
+        }
+      });
+    return;
   }
-  #[cfg(not(feature = "parallel"))]
-  {
-    #[cfg(feature = "simd")]
-    super::simd_ops::simd_mul_ramp(&mut buffer.samples[..fade_len], 0.0, inv_fade);
-    #[cfg(not(feature = "simd"))]
-    for i in 0..fade_len {
-      buffer.samples[i] *= i as f32 * inv_fade;
+  for (frame_idx, frame) in buffer.samples[..fade_len].chunks_mut(ch).enumerate() {
+    let gain = frame_idx as f32 * inv_frames;
+    for s in frame {
+      *s *= gain;
     }
   }
 }
@@ -58,45 +73,68 @@ pub fn fade_in(buffer: &mut AudioBuffer, duration_secs: f64) {
 /// * `buffer` - The audio buffer to modify in place.
 /// * `duration_secs` - The duration of the fade-out in seconds.
 pub fn fade_out(buffer: &mut AudioBuffer, duration_secs: f64) {
-  if duration_secs <= 0.0 {
+  let ch = buffer.channels as usize;
+  if !duration_secs.is_finite() || duration_secs <= 0.0 || ch == 0 || buffer.sample_rate == 0 {
     return;
   }
 
-  let samples_per_sec = buffer.sample_rate as f64 * buffer.channels as f64;
-  let fade_len = (duration_secs * samples_per_sec) as usize;
-  let total_len = buffer.samples.len();
-  let fade_len = fade_len.min(total_len);
-
-  if fade_len == 0 {
+  let total_frames = buffer.samples.len() / ch;
+  let fade_frames = ((duration_secs * buffer.sample_rate as f64) as usize).min(total_frames);
+  if fade_frames == 0 {
     return;
   }
 
-  let start_idx = total_len - fade_len;
-  let inv_fade = 1.0 / fade_len as f32;
+  let fade_len = fade_frames * ch;
+  let aligned_total = total_frames * ch;
+  let start_idx = aligned_total - fade_len;
+  let inv_frames = 1.0 / fade_frames as f32;
 
+  if ch == 1 {
+    #[cfg(feature = "parallel")]
+    if fade_len >= PAR_THRESHOLD {
+      buffer.samples[start_idx..aligned_total]
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(i, s)| *s *= 1.0 - i as f32 * inv_frames);
+      return;
+    }
+    #[cfg(feature = "simd")]
+    super::simd_ops::simd_mul_ramp(
+      &mut buffer.samples[start_idx..aligned_total],
+      1.0,
+      -inv_frames,
+    );
+    #[cfg(not(feature = "simd"))]
+    for (i, s) in buffer.samples[start_idx..aligned_total]
+      .iter_mut()
+      .enumerate()
+    {
+      *s *= 1.0 - (i as f32 * inv_frames);
+    }
+    return;
+  }
+
+  // Multi-channel: frame-aligned so left/right receive identical ramp gain.
   #[cfg(feature = "parallel")]
   if fade_len >= PAR_THRESHOLD {
-    buffer.samples[start_idx..]
-      .par_iter_mut()
+    buffer.samples[start_idx..aligned_total]
+      .par_chunks_mut(ch)
       .enumerate()
-      .for_each(|(i, s)| *s *= 1.0 - i as f32 * inv_fade);
-  } else {
-    #[cfg(feature = "simd")]
-    super::simd_ops::simd_mul_ramp(&mut buffer.samples[start_idx..], 1.0, -inv_fade);
-    #[cfg(not(feature = "simd"))]
-    for i in 0..fade_len {
-      let gain = 1.0 - (i as f32 * inv_fade);
-      buffer.samples[start_idx + i] *= gain;
-    }
+      .for_each(|(frame_idx, frame)| {
+        let gain = 1.0 - frame_idx as f32 * inv_frames;
+        for s in frame {
+          *s *= gain;
+        }
+      });
+    return;
   }
-  #[cfg(not(feature = "parallel"))]
+  for (frame_idx, frame) in buffer.samples[start_idx..aligned_total]
+    .chunks_mut(ch)
+    .enumerate()
   {
-    #[cfg(feature = "simd")]
-    super::simd_ops::simd_mul_ramp(&mut buffer.samples[start_idx..], 1.0, -inv_fade);
-    #[cfg(not(feature = "simd"))]
-    for i in 0..fade_len {
-      let gain = 1.0 - (i as f32 * inv_fade);
-      buffer.samples[start_idx + i] *= gain;
+    let gain = 1.0 - frame_idx as f32 * inv_frames;
+    for s in frame {
+      *s *= gain;
     }
   }
 }

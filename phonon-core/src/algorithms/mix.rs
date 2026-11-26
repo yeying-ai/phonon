@@ -106,11 +106,21 @@ fn mix_scalar(
     }
   }
 
-  // Tail from the longer buffer.
+  // Tail from the longer buffer (clamped consistently with the parallel path).
   if len1 > min_len {
-    out[min_len..max_len].copy_from_slice(&buffer1.samples[min_len..len1]);
+    for (dst, &src) in out[min_len..max_len]
+      .iter_mut()
+      .zip(&buffer1.samples[min_len..len1])
+    {
+      *dst = src.clamp(-1.0, 1.0);
+    }
   } else if len2 > min_len {
-    out[min_len..max_len].copy_from_slice(&buffer2.samples[min_len..len2]);
+    for (dst, &src) in out[min_len..max_len]
+      .iter_mut()
+      .zip(&buffer2.samples[min_len..len2])
+    {
+      *dst = src.clamp(-1.0, 1.0);
+    }
   }
 
   out

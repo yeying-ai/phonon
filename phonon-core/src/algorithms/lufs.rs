@@ -179,70 +179,68 @@ pub fn loudness_integrated(buffer: &AudioBuffer) -> f32 {
   gated_mean_loudness(&blocks, REL_GATE_OFFSET_INTEGRATED) as f32
 }
 
-/// Compute all valid 400 ms momentary block loudnesses (overlapping by 75%).
-fn momentary_block_loudnesses(buffer: &AudioBuffer) -> Vec<f64> {
+/// Deinterleave and K-weight every channel once so integrated, momentary,
+/// short-term, and LRA measurements share the same filtered audio.
+fn k_weight_buffer(buffer: &AudioBuffer) -> Option<Vec<Vec<f64>>> {
   let sr = buffer.sample_rate as f64;
   let channels = buffer.channels as usize;
-  if buffer.samples.is_empty() || sr == 0.0 || channels == 0 {
-    return vec![];
+  if buffer.samples.is_empty() || sr <= 3_400.0 || channels == 0 {
+    return None;
   }
-  let block_len = (MOMENTARY_BLOCK_SECS * sr) as usize;
-  let hop = (BLOCK_HOP_SECS * sr) as usize;
+  let per_channel = deinterleave(&buffer.samples, channels);
+  Some(
+    per_channel
+      .iter()
+      .map(|ch| k_weight_channel(ch, sr))
+      .collect(),
+  )
+}
+
+/// Compute block loudnesses from pre-computed K-weighted channel buffers.
+fn block_loudnesses_from_weighted(weighted: &[Vec<f64>], block_len: usize, hop: usize) -> Vec<f64> {
   if block_len == 0 || hop == 0 {
     return vec![];
   }
-
-  let per_channel = deinterleave(&buffer.samples, channels);
-  let weighted: Vec<Vec<f64>> = per_channel
-    .iter()
-    .map(|ch| k_weight_channel(ch, sr))
-    .collect();
   let total_frames = weighted.first().map(|v| v.len()).unwrap_or(0);
   if total_frames < block_len {
     return vec![];
   }
 
-  let mut out = Vec::new();
+  let mut out = Vec::with_capacity((total_frames - block_len) / hop + 1);
   let mut start = 0;
   while start + block_len <= total_frames {
-    let squares = block_mean_squares(&weighted, start, block_len);
+    let squares = block_mean_squares(weighted, start, block_len);
     out.push(block_loudness(&squares));
     start += hop;
   }
   out
 }
 
-/// Compute all 3 s short-term block loudnesses (1 s hop).
-fn short_term_block_loudnesses(buffer: &AudioBuffer) -> Vec<f64> {
+/// Compute all valid 400 ms momentary block loudnesses (overlapping by 75%).
+fn momentary_block_loudnesses(buffer: &AudioBuffer) -> Vec<f64> {
+  let Some(weighted) = k_weight_buffer(buffer) else {
+    return vec![];
+  };
   let sr = buffer.sample_rate as f64;
-  let channels = buffer.channels as usize;
-  if buffer.samples.is_empty() || sr == 0.0 || channels == 0 {
-    return vec![];
-  }
-  let block_len = (SHORT_TERM_BLOCK_SECS * sr) as usize;
-  let hop = (1.0 * sr) as usize;
-  if block_len == 0 || hop == 0 {
-    return vec![];
-  }
+  block_loudnesses_from_weighted(
+    &weighted,
+    (MOMENTARY_BLOCK_SECS * sr) as usize,
+    (BLOCK_HOP_SECS * sr) as usize,
+  )
+}
 
-  let per_channel = deinterleave(&buffer.samples, channels);
-  let weighted: Vec<Vec<f64>> = per_channel
-    .iter()
-    .map(|ch| k_weight_channel(ch, sr))
-    .collect();
-  let total_frames = weighted.first().map(|v| v.len()).unwrap_or(0);
-  if total_frames < block_len {
+/// Compute all 3 s short-term block loudnesses at the EBU Tech 3341/3342
+/// 100 ms (10 Hz) hop rate.
+fn short_term_block_loudnesses(buffer: &AudioBuffer) -> Vec<f64> {
+  let Some(weighted) = k_weight_buffer(buffer) else {
     return vec![];
-  }
-
-  let mut out = Vec::new();
-  let mut start = 0;
-  while start + block_len <= total_frames {
-    let squares = block_mean_squares(&weighted, start, block_len);
-    out.push(block_loudness(&squares));
-    start += hop;
-  }
-  out
+  };
+  let sr = buffer.sample_rate as f64;
+  block_loudnesses_from_weighted(
+    &weighted,
+    (SHORT_TERM_BLOCK_SECS * sr) as usize,
+    (BLOCK_HOP_SECS * sr) as usize,
+  )
 }
 
 /// Apply BS.1770 absolute + relative gating and return the gated mean
@@ -315,7 +313,10 @@ pub fn loudness_short_term_max(buffer: &AudioBuffer) -> f32 {
 ///
 /// Returns 0.0 if fewer than two short-term blocks survive gating.
 pub fn loudness_range(buffer: &AudioBuffer) -> f32 {
-  let blocks = short_term_block_loudnesses(buffer);
+  loudness_range_from_blocks(&short_term_block_loudnesses(buffer))
+}
+
+fn loudness_range_from_blocks(blocks: &[f64]) -> f32 {
   if blocks.is_empty() {
     return 0.0;
   }
@@ -488,13 +489,38 @@ pub struct LoudnessReport {
   pub true_peak_dbtp: f32,
 }
 
-/// Run all loudness measurements in one pass-friendly call.
+/// Run all loudness measurements in a single K-weighting pass.
 pub fn measure_loudness(buffer: &AudioBuffer) -> LoudnessReport {
+  let (integrated_lufs, momentary_max_lufs, short_term_max_lufs, range_lu) =
+    if let Some(weighted) = k_weight_buffer(buffer) {
+      let sr = buffer.sample_rate as f64;
+      let hop = (BLOCK_HOP_SECS * sr) as usize;
+      let momentary_blocks =
+        block_loudnesses_from_weighted(&weighted, (MOMENTARY_BLOCK_SECS * sr) as usize, hop);
+      let short_term_blocks =
+        block_loudnesses_from_weighted(&weighted, (SHORT_TERM_BLOCK_SECS * sr) as usize, hop);
+      let integrated = gated_mean_loudness(&momentary_blocks, REL_GATE_OFFSET_INTEGRATED) as f32;
+      let momentary_max = momentary_blocks
+        .iter()
+        .copied()
+        .filter(|l| l.is_finite())
+        .fold(f64::NEG_INFINITY, f64::max) as f32;
+      let short_term_max = short_term_blocks
+        .iter()
+        .copied()
+        .filter(|l| l.is_finite())
+        .fold(f64::NEG_INFINITY, f64::max) as f32;
+      let range = loudness_range_from_blocks(&short_term_blocks);
+      (integrated, momentary_max, short_term_max, range)
+    } else {
+      (f32::NEG_INFINITY, f32::NEG_INFINITY, f32::NEG_INFINITY, 0.0)
+    };
+
   LoudnessReport {
-    integrated_lufs: loudness_integrated(buffer),
-    momentary_max_lufs: loudness_momentary_max(buffer),
-    short_term_max_lufs: loudness_short_term_max(buffer),
-    range_lu: loudness_range(buffer),
+    integrated_lufs,
+    momentary_max_lufs,
+    short_term_max_lufs,
+    range_lu,
     true_peak_dbtp: true_peak_dbtp(buffer),
   }
 }
@@ -510,10 +536,15 @@ pub fn measure_loudness(buffer: &AudioBuffer) -> LoudnessReport {
 /// the usual -16 LUFS / -1 dBTP podcast targets, so lowering the gain alone
 /// would miss the loudness target.
 ///
-/// No-op when the buffer is too short to measure or already silent.
+/// No-op when the buffer is too short to measure, already silent, or given
+/// non-finite target parameters.
 pub fn normalize_lufs(buffer: &mut AudioBuffer, target_lufs: f32, true_peak_max_dbtp: f32) {
+  if !target_lufs.is_finite() || !true_peak_max_dbtp.is_finite() {
+    return;
+  }
   /// Correction passes; each recovers most of what the previous limit took.
   const PASSES: usize = 4;
+  let mut limited = false;
   for _ in 0..PASSES {
     let current = loudness_integrated(buffer);
     if !current.is_finite() {
@@ -528,9 +559,12 @@ pub fn normalize_lufs(buffer: &mut AudioBuffer, target_lufs: f32, true_peak_max_
       *s *= gain_lin;
     }
     limit_true_peak(buffer, true_peak_max_dbtp);
+    limited = true;
   }
   // Already-on-target input skips the loop but may still be over the ceiling.
-  limit_true_peak(buffer, true_peak_max_dbtp);
+  if !limited {
+    limit_true_peak(buffer, true_peak_max_dbtp);
+  }
 }
 
 /// Look-ahead long enough for the gain to ramp down before a peak arrives.
@@ -546,12 +580,23 @@ const LIMITER_RELEASE_SECS: f64 = 0.08;
 /// smooth gain that never exceeds what any frame needs; release then lets it
 /// recover gradually. Channels share one gain so the stereo image holds.
 pub fn limit_true_peak(buffer: &mut AudioBuffer, ceiling_dbtp: f32) {
+  if !ceiling_dbtp.is_finite() || buffer.sample_rate == 0 || buffer.channels == 0 {
+    return;
+  }
   let ceiling = 10.0_f64.powf(ceiling_dbtp as f64 / 20.0);
   let needed: Vec<f64> = frame_true_peaks(buffer)
     .into_iter()
-    .map(|p| if p > ceiling { ceiling / p } else { 1.0 })
+    .map(|p| {
+      if !p.is_finite() {
+        0.0
+      } else if p > ceiling {
+        ceiling / p
+      } else {
+        1.0
+      }
+    })
     .collect();
-  if needed.iter().all(|&g| g >= 1.0) {
+  if needed.iter().all(|&g| g >= 1.0) && buffer.samples.iter().all(|s| s.is_finite()) {
     return;
   }
   let window = ((buffer.sample_rate as f64 * LIMITER_LOOKAHEAD_SECS) as usize).max(1);
@@ -575,7 +620,11 @@ pub fn limit_true_peak(buffer: &mut AudioBuffer, ceiling_dbtp: f32) {
     };
     gain = (sum / window as f64).min(gain * release + (1.0 - release));
     for s in frame {
-      *s = (*s as f64 * gain) as f32;
+      *s = if s.is_finite() {
+        (*s as f64 * gain) as f32
+      } else {
+        0.0
+      };
     }
   }
 }
